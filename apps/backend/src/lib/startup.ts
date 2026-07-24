@@ -44,6 +44,15 @@ export async function initializeOnStartup(): Promise<void> {
  */
 export async function initializeIdleServers() {
   try {
+    const disableIdlePrewarm = ["1", "true", "yes", "y", "on"].includes(
+      (process.env.METAMCP_DISABLE_IDLE_PREWARM || "").trim().toLowerCase(),
+    );
+
+    if (disableIdlePrewarm) {
+      console.log("Idle MCP server prewarm disabled via METAMCP_DISABLE_IDLE_PREWARM=true");
+      return;
+    }
+
     console.log(
       "Initializing idle servers for all namespaces and all MCP servers...",
     );

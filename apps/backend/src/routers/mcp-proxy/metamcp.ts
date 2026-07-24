@@ -24,6 +24,42 @@ const metamcpServers: Map<
     cleanup: () => Promise<void>;
   }
 > = new Map(); // MetaMCP servers by sessionId
+const SESSION_IDLE_TIMEOUT_MS = Number(
+  process.env.METAMCP_SESSION_IDLE_TIMEOUT_MS || "60000",
+);
+const sessionTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+const sessionsBeingCleanedUp: Set<string> = new Set();
+
+const clearSessionTimer = (sessionId: string) => {
+  const timer = sessionTimers.get(sessionId);
+  if (timer) {
+    clearTimeout(timer);
+    sessionTimers.delete(sessionId);
+  }
+};
+
+const scheduleSessionTimer = (sessionId: string) => {
+  if (!Number.isFinite(SESSION_IDLE_TIMEOUT_MS) || SESSION_IDLE_TIMEOUT_MS <= 0) {
+    return;
+  }
+
+  clearSessionTimer(sessionId);
+
+  const timer = setTimeout(() => {
+    logger.info(
+      `MetaMCP session ${sessionId} idle for ${SESSION_IDLE_TIMEOUT_MS}ms, cleaning up`,
+    );
+    cleanupSession(sessionId).catch((error) => {
+      logger.error(
+        `Error during idle cleanup for MetaMCP session ${sessionId}:`,
+        error,
+      );
+    });
+  }, SESSION_IDLE_TIMEOUT_MS);
+
+  timer.unref?.();
+  sessionTimers.set(sessionId, timer);
+};
 
 // Create a MetaMCP server instance
 const createMetaMcpServer = async (
@@ -41,24 +77,34 @@ const createMetaMcpServer = async (
 
 // Cleanup function for a specific session
 const cleanupSession = async (sessionId: string) => {
+  if (sessionsBeingCleanedUp.has(sessionId)) {
+    return;
+  }
+
+  sessionsBeingCleanedUp.add(sessionId);
+  clearSessionTimer(sessionId);
   logger.info(`Cleaning up session ${sessionId}`);
 
-  // Clean up transport
-  const transport = webAppTransports.get(sessionId);
-  if (transport) {
-    webAppTransports.delete(sessionId);
-    await transport.close();
-  }
+  try {
+    // Clean up transport
+    const transport = webAppTransports.get(sessionId);
+    if (transport) {
+      webAppTransports.delete(sessionId);
+      await transport.close();
+    }
 
-  // Clean up server instance
-  const serverInstance = metamcpServers.get(sessionId);
-  if (serverInstance) {
-    metamcpServers.delete(sessionId);
-    await serverInstance.cleanup();
-  }
+    // Clean up server instance
+    const serverInstance = metamcpServers.get(sessionId);
+    if (serverInstance) {
+      metamcpServers.delete(sessionId);
+      await serverInstance.cleanup();
+    }
 
-  // Clean up session connections
-  await mcpServerPool.cleanupSession(sessionId);
+    // Clean up session connections
+    await mcpServerPool.cleanupSession(sessionId);
+  } finally {
+    sessionsBeingCleanedUp.delete(sessionId);
+  }
 };
 
 metamcpRouter.get("/:uuid/mcp", async (req, res) => {
@@ -75,6 +121,7 @@ metamcpRouter.get("/:uuid/mcp", async (req, res) => {
       res.status(404).end("Session not found");
       return;
     } else {
+      scheduleSessionTimer(sessionId);
       await transport.handleRequest(req, res);
     }
   } catch (error) {
@@ -119,6 +166,7 @@ metamcpRouter.post("/:uuid/mcp", async (req, res) => {
 
             webAppTransports.set(newSessionId, webAppTransport);
             metamcpServers.set(newSessionId, mcpServerInstance);
+            scheduleSessionTimer(newSessionId);
 
             logger.info(
               `MetaMCP Client <-> Proxy sessionId: ${newSessionId} for namespace ${namespaceUuid}`,
@@ -160,6 +208,7 @@ metamcpRouter.post("/:uuid/mcp", async (req, res) => {
       if (!transport) {
         res.status(404).end("Transport not found for sessionId " + sessionId);
       } else {
+        scheduleSessionTimer(sessionId);
         await (transport as StreamableHTTPServerTransport).handleRequest(
           req,
           res,
@@ -220,6 +269,7 @@ metamcpRouter.get("/:uuid/sse", async (req, res) => {
 
     webAppTransports.set(sessionId, webAppTransport);
     metamcpServers.set(sessionId, mcpServerInstance);
+    scheduleSessionTimer(sessionId);
 
     // Handle cleanup when connection closes
     res.on("close", async () => {
@@ -249,6 +299,7 @@ metamcpRouter.post("/:uuid/message", async (req, res) => {
       res.status(404).end("Session not found");
       return;
     }
+    scheduleSessionTimer(sessionId as string);
     await transport.handlePostMessage(req, res);
   } catch (error) {
     logger.error("Error in MetaMCP /message route:", error);

@@ -42,9 +42,16 @@ export class MetaMcpServerPool {
 
   // Default number of idle servers per namespace UUID
   private readonly defaultIdleCount: number;
+  private readonly disableIdleServers: boolean;
 
   private constructor(defaultIdleCount: number = 1) {
     this.defaultIdleCount = defaultIdleCount;
+    this.disableIdleServers = ["1", "true", "yes", "y", "on"].includes(
+      (process.env.METAMCP_DISABLE_IDLE_PREWARM || "").trim().toLowerCase(),
+    );
+    if (this.disableIdleServers) {
+      logger.info("MetaMCP idle server pool disabled via METAMCP_DISABLE_IDLE_PREWARM=true");
+    }
     this.startCleanupTimer();
   }
 
@@ -85,7 +92,9 @@ export class MetaMcpServerPool {
       );
 
       // Create a new idle server to replace the one we just used (ASYNC - NON-BLOCKING)
-      this.createIdleServerAsync(namespaceUuid, includeInactiveServers);
+      if (!this.disableIdleServers) {
+        this.createIdleServerAsync(namespaceUuid, includeInactiveServers);
+      }
 
       return idleServer;
     }
@@ -109,7 +118,9 @@ export class MetaMcpServerPool {
     );
 
     // Also create an idle server for future use (ASYNC - NON-BLOCKING)
-    this.createIdleServerAsync(namespaceUuid, includeInactiveServers);
+    if (!this.disableIdleServers) {
+      this.createIdleServerAsync(namespaceUuid, includeInactiveServers);
+    }
 
     return newServer;
   }
@@ -147,6 +158,10 @@ export class MetaMcpServerPool {
     namespaceUuid: string,
     includeInactiveServers: boolean = false,
   ): Promise<void> {
+    if (this.disableIdleServers) {
+      return;
+    }
+
     // Don't create if we already have an idle server for this namespace
     if (this.idleServers[namespaceUuid]) {
       return;
@@ -179,6 +194,10 @@ export class MetaMcpServerPool {
     namespaceUuid: string,
     includeInactiveServers: boolean = false,
   ): void {
+    if (this.disableIdleServers) {
+      return;
+    }
+
     // Don't create if we already have an idle server or are already creating one
     if (
       this.idleServers[namespaceUuid] ||
@@ -609,6 +628,7 @@ export class MetaMcpServerPool {
     if (age === undefined) return false;
 
     const sessionLifetime = await configService.getSessionLifetime();
+    if (sessionLifetime === null) return false; // infinite sessions
     return age > sessionLifetime;
   }
 }

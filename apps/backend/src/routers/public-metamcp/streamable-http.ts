@@ -21,12 +21,54 @@ const sessionManager =
   new SessionLifetimeManagerImpl<StreamableHTTPServerTransport>(
     "StreamableHTTP",
   );
+const SESSION_IDLE_TIMEOUT_MS = Number(
+  process.env.METAMCP_SESSION_IDLE_TIMEOUT_MS || "60000",
+);
+const sessionTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+const sessionsBeingCleanedUp: Set<string> = new Set();
+
+const clearSessionTimer = (sessionId: string) => {
+  const timer = sessionTimers.get(sessionId);
+  if (timer) {
+    clearTimeout(timer);
+    sessionTimers.delete(sessionId);
+  }
+};
+
+const scheduleSessionTimer = (sessionId: string) => {
+  if (!Number.isFinite(SESSION_IDLE_TIMEOUT_MS) || SESSION_IDLE_TIMEOUT_MS <= 0) {
+    return;
+  }
+
+  clearSessionTimer(sessionId);
+
+  const timer = setTimeout(() => {
+    logger.info(
+      `Public StreamableHTTP session ${sessionId} idle for ${SESSION_IDLE_TIMEOUT_MS}ms, cleaning up`,
+    );
+    cleanupSession(sessionId).catch((error) => {
+      logger.error(
+        `Error during idle cleanup of public StreamableHTTP session ${sessionId}:`,
+        error,
+      );
+    });
+  }, SESSION_IDLE_TIMEOUT_MS);
+
+  timer.unref?.();
+  sessionTimers.set(sessionId, timer);
+};
 
 // Cleanup function for a specific session
 const cleanupSession = async (
   sessionId: string,
   transport?: StreamableHTTPServerTransport,
 ) => {
+  if (sessionsBeingCleanedUp.has(sessionId)) {
+    return;
+  }
+
+  sessionsBeingCleanedUp.add(sessionId);
+  clearSessionTimer(sessionId);
   logger.info(`Cleaning up StreamableHTTP session ${sessionId}`);
 
   try {
@@ -54,6 +96,8 @@ const cleanupSession = async (
     sessionManager.removeSession(sessionId);
     logger.info(`Removed orphaned session ${sessionId} due to cleanup error`);
     throw error;
+  } finally {
+    sessionsBeingCleanedUp.delete(sessionId);
   }
 };
 
@@ -98,6 +142,7 @@ streamableHttpRouter.get(
         return;
       } else {
         logger.info(`Found session ${sessionId}, handling request`);
+        scheduleSessionTimer(sessionId);
         await transport.handleRequest(req, res);
       }
     } catch (error) {
@@ -171,6 +216,7 @@ streamableHttpRouter.post(
 
         // Store transport reference
         sessionManager.addSession(newSessionId, transport);
+        scheduleSessionTimer(newSessionId);
 
         logger.info(
           `Public Endpoint Client <-> Proxy sessionId: ${newSessionId} for endpoint ${endpointName} -> namespace ${namespaceUuid}`,
@@ -223,6 +269,7 @@ streamableHttpRouter.post(
           });
         } else {
           logger.info(`Found session ${sessionId}, handling request`);
+          scheduleSessionTimer(sessionId);
           await transport.handleRequest(req, res);
         }
       } catch (error) {
