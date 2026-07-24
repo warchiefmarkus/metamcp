@@ -94,6 +94,11 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true, // This will be dynamically controlled by middleware
     requireEmailVerification: false, // Set to true if you want email verification
+    minPasswordLength: 6, // Allow passwords with at least 6 characters
+    maxPasswordLength: 128,
+    password: {
+      minLength: 6,
+    },
   },
   account: {
     accountLinking: {
