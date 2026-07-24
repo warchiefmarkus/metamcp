@@ -4,6 +4,9 @@
   "type": "module",
   "private": true,
   "description": "Shared Zod schemas and types",
+  "files": [
+    "dist"
+  ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

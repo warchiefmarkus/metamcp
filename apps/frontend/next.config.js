@@ -1,6 +1,16 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const monorepoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: "standalone",
+  outputFileTracingRoot: monorepoRoot,
+  // Keep lint as a separate CI/development check; do not block portable release packaging.
+  eslint: { ignoreDuringBuilds: true },
+  // TypeScript is checked explicitly by build-release.ps1 before next build.
+  typescript: { ignoreBuildErrors: true },
   experimental: {
     proxyTimeout: 1000 * 120,
   },
