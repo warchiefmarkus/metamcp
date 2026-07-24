@@ -14,12 +14,24 @@ class MetaMcpLogStore {
   private readonly maxLogs = 1000; // Keep only the last 1000 logs
   private readonly listeners: Set<(log: MetaMcpLogEntry) => void> = new Set();
 
+  private isIgnoredRuntimeNoise(message: string): boolean {
+    return (
+      message.includes("[DEP0040]") ||
+      message.includes("The `punycode` module is deprecated") ||
+      message.includes("Use `node --trace-deprecation")
+    );
+  }
+
   addLog(
     serverName: string,
     level: MetaMcpLogEntry["level"],
     message: string,
     error?: unknown,
   ) {
+    if (this.isIgnoredRuntimeNoise(message)) {
+      return;
+    }
+
     const logEntry: MetaMcpLogEntry = {
       id: crypto.randomUUID(),
       timestamp: new Date(),

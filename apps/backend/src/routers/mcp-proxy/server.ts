@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import {
   SSEClientTransport,
@@ -33,6 +36,26 @@ const STREAMABLE_HTTP_HEADERS_PASSTHROUGH = [
 
 const defaultEnvironment = {
   ...getDefaultEnvironment(),
+};
+
+const getSafeNpxCwd = (command: string): string | undefined => {
+  const normalizedCommand = command.toLowerCase();
+  const isNpxCommand =
+    normalizedCommand === "npx" ||
+    normalizedCommand.endsWith("/npx") ||
+    normalizedCommand.endsWith("\\npx.cmd") ||
+    normalizedCommand.endsWith("\\npx.exe");
+
+  if (!isNpxCommand) {
+    return undefined;
+  }
+
+  const cwd =
+    process.env.METAMCP_NPX_CWD ||
+    path.join(os.homedir(), ".metamcp", "npx-cwd");
+
+  fs.mkdirSync(cwd, { recursive: true });
+  return cwd;
 };
 
 // Cooldown mechanism for failed STDIO commands
@@ -195,8 +218,42 @@ serverRouter.use(betterAuthMcpMiddleware);
 const webAppTransports: Map<string, Transport> = new Map<string, Transport>(); // Web app transports by web app sessionId
 const serverTransports: Map<string, Transport> = new Map<string, Transport>(); // Server Transports by web app sessionId
 
+const SESSION_IDLE_TIMEOUT_MS = Number(
+  process.env.METAMCP_SESSION_IDLE_TIMEOUT_MS || "60000",
+);
+const sessionTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+
+const clearSessionTimer = (sessionId: string) => {
+  const timer = sessionTimers.get(sessionId);
+  if (timer) {
+    clearTimeout(timer);
+    sessionTimers.delete(sessionId);
+  }
+};
+
+const scheduleSessionTimer = (sessionId: string) => {
+  if (!Number.isFinite(SESSION_IDLE_TIMEOUT_MS) || SESSION_IDLE_TIMEOUT_MS <= 0) {
+    return;
+  }
+
+  clearSessionTimer(sessionId);
+
+  const timer = setTimeout(() => {
+    logger.info(
+      `Session ${sessionId} idle for ${SESSION_IDLE_TIMEOUT_MS}ms, cleaning up`,
+    );
+    cleanupSession(sessionId).catch((error) => {
+      logger.error(`Error during idle cleanup for session ${sessionId}:`, error);
+    });
+  }, SESSION_IDLE_TIMEOUT_MS);
+
+  timer.unref?.();
+  sessionTimers.set(sessionId, timer);
+};
+
 // Session cleanup function
 const cleanupSession = async (sessionId: string) => {
+  clearSessionTimer(sessionId);
   logger.info(`Cleaning up proxy session ${sessionId}`);
 
   // Clean up web app transport
@@ -272,13 +329,17 @@ const createTransport = async (req: express.Request): Promise<Transport> => {
       }
     }
 
-    logger.info(`STDIO transport: command=${cmd}, args=${args}`);
+    const stdioCwd = getSafeNpxCwd(command) || getSafeNpxCwd(cmd);
+    logger.info(
+      `STDIO transport: command=${cmd}, args=${args}, cwd=${stdioCwd || "default"}`,
+    );
 
     const transport = new ProcessManagedStdioTransport({
       command: cmd,
       args,
       env,
       stderr: "pipe",
+      cwd: stdioCwd,
     });
 
     try {
@@ -376,6 +437,7 @@ serverRouter.get("/mcp", async (req, res) => {
       res.status(404).end("Session not found");
       return;
     } else {
+      scheduleSessionTimer(sessionId);
       await transport.handleRequest(req, res);
     }
   } catch (error) {
@@ -452,6 +514,7 @@ serverRouter.post("/mcp", async (req, res) => {
           if (serverTransport) {
             serverTransports.set(sessionId, serverTransport);
           }
+          scheduleSessionTimer(sessionId);
           logger.info("Client <-> Proxy  sessionId: " + sessionId);
         },
       });
@@ -495,6 +558,7 @@ serverRouter.post("/mcp", async (req, res) => {
       if (!transport) {
         res.status(404).end("Transport not found for sessionId " + sessionId);
       } else {
+        scheduleSessionTimer(sessionId);
         await (transport as StreamableHTTPServerTransport).handleRequest(
           req,
           res,

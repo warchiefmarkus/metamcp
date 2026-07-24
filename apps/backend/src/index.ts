@@ -87,8 +87,11 @@ async function start(): Promise<void> {
   // Startup initialization (must run after DB is reachable/migrations are applied, and before listening)
   await initializeOnStartup();
 
-  app.listen(12009, async () => {
-    console.log(`Server is running on port 12009`);
+  const host = process.env.BACKEND_HOST ?? "127.0.0.1";
+  const port = Number.parseInt(process.env.BACKEND_PORT ?? "12009", 10);
+
+  app.listen(port, host, async () => {
+    console.log(`Server is running at http://${host}:${port}`);
     console.log(`Auth routes available at: http://localhost:12009/api/auth`);
     console.log(
       `Public MetaMCP endpoints available at: http://localhost:12009/metamcp`,

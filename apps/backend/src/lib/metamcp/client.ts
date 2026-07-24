@@ -1,4 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioServerParameters } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -14,6 +17,26 @@ import { resolveEnvVariables } from "./utils";
 
 const sleep = (time: number) =>
   new Promise<void>((resolve) => setTimeout(() => resolve(), time));
+
+const getSafeNpxCwd = (command: string): string | undefined => {
+  const normalizedCommand = command.toLowerCase();
+  const isNpxCommand =
+    normalizedCommand === "npx" ||
+    normalizedCommand.endsWith("/npx") ||
+    normalizedCommand.endsWith("\\npx.cmd") ||
+    normalizedCommand.endsWith("\\npx.exe");
+
+  if (!isNpxCommand) {
+    return undefined;
+  }
+
+  const cwd =
+    process.env.METAMCP_NPX_CWD ||
+    path.join(os.homedir(), ".metamcp", "npx-cwd");
+
+  fs.mkdirSync(cwd, { recursive: true });
+  return cwd;
+};
 
 export interface ConnectedClient {
   client: Client;
@@ -48,11 +71,20 @@ export const createMetaMcpClient = (
       ? resolveEnvVariables(serverParams.env)
       : undefined;
 
+    const stdioCommand = serverParams.command || "";
+    const stdioCwd = getSafeNpxCwd(stdioCommand);
+    if (stdioCwd) {
+      logger.info(
+        `Using safe npx cwd for server ${serverParams.name}: ${stdioCwd}`,
+      );
+    }
+
     const stdioParams: StdioServerParameters = {
-      command: serverParams.command || "",
+      command: stdioCommand,
       args: serverParams.args || undefined,
       env: resolvedEnv,
       stderr: "pipe",
+      cwd: stdioCwd,
     };
     transport = new ProcessManagedStdioTransport(stdioParams);
 

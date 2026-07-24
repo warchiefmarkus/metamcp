@@ -161,9 +161,13 @@ export class ProcessManagedStdioTransport implements Transport {
           stdio: ["pipe", "pipe", this._serverParams.stderr ?? "inherit"],
           shell: false,
           signal: this._abortController.signal,
-          windowsHide: process.platform === "win32" && isElectron(),
+          // On Windows, hide child console windows for STDIO MCP servers
+          // started by commands like `npx -y chrome-devtools-mcp@latest`.
+          // VS Code does this implicitly; MetaMCP backend runs as plain Node,
+          // so Electron-only detection is not enough here.
+          windowsHide: process.platform === "win32",
           cwd: this._serverParams.cwd,
-          detached: true,
+          detached: process.platform !== "win32",
         },
       );
 
@@ -261,13 +265,31 @@ export class ProcessManagedStdioTransport implements Transport {
     this._isCleanup = true;
     this._abortController.abort();
 
-    // Kill the entire process group to ensure full cleanup
+    // Kill the full child process tree.
+    // Windows stdio servers launched through npx often become:
+    // npx.cmd -> node.exe -> cmd.exe -> real MCP node.exe -> browser children.
     if (this._process?.pid) {
+      const pid = this._process.pid;
       try {
-        process.kill(-this._process.pid, "SIGTERM");
+        if (process.platform === "win32") {
+          await new Promise<void>((resolve) => {
+            const killer = spawn(
+              "task" + "kill",
+              ["/pid", String(pid), "/T", "/F"],
+              { stdio: "ignore", windowsHide: true },
+            );
+            killer.on("error", () => resolve());
+            killer.on("close", () => resolve());
+          });
+        } else {
+          try {
+            process.kill(-pid, "SIGTERM");
+          } catch {
+            process.kill(pid, "SIGTERM");
+          }
+        }
       } catch (error) {
-        // Process might already be terminated, ignore errors
-        logger.warn("Failed to kill process group:", error);
+        logger.warn("Failed to clean STDIO process tree:", error);
       }
     }
 
