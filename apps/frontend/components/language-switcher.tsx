@@ -11,6 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useTranslations } from "@/hooks/useTranslations";
+import { useMounted } from "@/hooks/use-mounted";
 import {
   getLocalizedPath,
   getPathnameWithoutLocale,
@@ -20,6 +21,7 @@ import {
 } from "@/lib/i18n";
 
 export function LanguageSwitcher() {
+  const mounted = useMounted();
   const { locale: currentLocale } = useTranslations();
   const router = useRouter();
   const pathname = usePathname();
@@ -39,6 +41,15 @@ export function LanguageSwitcher() {
     // Navigate to the new path
     router.push(newPath);
   };
+
+  if (!mounted) {
+    return (
+      <Button variant="ghost" size="sm" className="gap-2" disabled suppressHydrationWarning>
+        <Languages className="h-4 w-4" />
+        <span>{LOCALE_NAMES[currentLocale]}</span>
+      </Button>
+    );
+  }
 
   return (
     <DropdownMenu>

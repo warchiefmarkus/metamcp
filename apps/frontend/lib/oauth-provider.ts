@@ -12,6 +12,25 @@ import { getServerSpecificKey, SESSION_KEYS } from "./constants";
 import { getAppUrl } from "./env";
 import { vanillaTrpcClient } from "./trpc";
 
+const getBrowserSessionStorage = (): Storage | null => {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  return window.sessionStorage;
+};
+
+const getSessionItem = (key: string): string | null =>
+  getBrowserSessionStorage()?.getItem(key) ?? null;
+
+const setSessionItem = (key: string, value: string): void => {
+  getBrowserSessionStorage()?.setItem(key, value);
+};
+
+const removeSessionItem = (key: string): void => {
+  getBrowserSessionStorage()?.removeItem(key);
+};
+
 // OAuth client provider that works with a specific MCP server
 class DbOAuthClientProvider implements OAuthClientProvider {
   private mcpServerUuid: string;
@@ -21,7 +40,7 @@ class DbOAuthClientProvider implements OAuthClientProvider {
     this.mcpServerUuid = mcpServerUuid;
     this.serverUrl = serverUrl;
     // Save the server URL to session storage for consistency
-    sessionStorage.setItem(SESSION_KEYS.SERVER_URL, serverUrl);
+    setSessionItem(SESSION_KEYS.SERVER_URL, serverUrl);
   }
 
   get redirectUrl() {
@@ -75,7 +94,7 @@ class DbOAuthClientProvider implements OAuthClientProvider {
           SESSION_KEYS.CLIENT_INFORMATION,
           this.serverUrl,
         );
-        const storedInfo = sessionStorage.getItem(key);
+        const storedInfo = getSessionItem(key);
         if (storedInfo) {
           return await OAuthClientInformationSchema.parseAsync(
             JSON.parse(storedInfo),
@@ -96,7 +115,7 @@ class DbOAuthClientProvider implements OAuthClientProvider {
       SESSION_KEYS.CLIENT_INFORMATION,
       this.serverUrl,
     );
-    sessionStorage.setItem(key, JSON.stringify(clientInformation));
+    setSessionItem(key, JSON.stringify(clientInformation));
 
     // If server exists, also save to database
     if (await this.serverExists()) {
@@ -127,7 +146,7 @@ class DbOAuthClientProvider implements OAuthClientProvider {
       } else {
         // Get from session storage during OAuth flow
         const key = getServerSpecificKey(SESSION_KEYS.TOKENS, this.serverUrl);
-        const storedTokens = sessionStorage.getItem(key);
+        const storedTokens = getSessionItem(key);
         if (storedTokens) {
           return await OAuthTokensSchema.parseAsync(JSON.parse(storedTokens));
         }
@@ -143,7 +162,7 @@ class DbOAuthClientProvider implements OAuthClientProvider {
   async saveTokens(tokens: OAuthTokens) {
     // Save to session storage during OAuth flow
     const key = getServerSpecificKey(SESSION_KEYS.TOKENS, this.serverUrl);
-    sessionStorage.setItem(key, JSON.stringify(tokens));
+    setSessionItem(key, JSON.stringify(tokens));
 
     // If server exists, also save to database
     if (await this.serverExists()) {
@@ -159,7 +178,9 @@ class DbOAuthClientProvider implements OAuthClientProvider {
   }
 
   redirectToAuthorization(authorizationUrl: URL) {
-    window.location.href = authorizationUrl.href;
+    if (typeof window !== "undefined") {
+      window.location.href = authorizationUrl.href;
+    }
   }
 
   async saveCodeVerifier(codeVerifier: string) {
@@ -168,7 +189,7 @@ class DbOAuthClientProvider implements OAuthClientProvider {
       SESSION_KEYS.CODE_VERIFIER,
       this.serverUrl,
     );
-    sessionStorage.setItem(key, codeVerifier);
+    setSessionItem(key, codeVerifier);
 
     // If server exists, also save to database
     if (await this.serverExists()) {
@@ -206,7 +227,7 @@ class DbOAuthClientProvider implements OAuthClientProvider {
       SESSION_KEYS.CODE_VERIFIER,
       this.serverUrl,
     );
-    const codeVerifier = sessionStorage.getItem(key);
+    const codeVerifier = getSessionItem(key);
     if (!codeVerifier) {
       throw new Error("No code verifier saved for session");
     }
@@ -215,13 +236,13 @@ class DbOAuthClientProvider implements OAuthClientProvider {
   }
 
   clear() {
-    sessionStorage.removeItem(
+    removeSessionItem(
       getServerSpecificKey(SESSION_KEYS.CLIENT_INFORMATION, this.serverUrl),
     );
-    sessionStorage.removeItem(
+    removeSessionItem(
       getServerSpecificKey(SESSION_KEYS.TOKENS, this.serverUrl),
     );
-    sessionStorage.removeItem(
+    removeSessionItem(
       getServerSpecificKey(SESSION_KEYS.CODE_VERIFIER, this.serverUrl),
     );
   }
@@ -238,7 +259,7 @@ export class DebugDbOAuthClientProvider extends DbOAuthClientProvider {
       SESSION_KEYS.SERVER_METADATA,
       this.serverUrl,
     );
-    sessionStorage.setItem(key, JSON.stringify(metadata));
+    setSessionItem(key, JSON.stringify(metadata));
   }
 
   getServerMetadata(): OAuthMetadata | null {
@@ -246,7 +267,7 @@ export class DebugDbOAuthClientProvider extends DbOAuthClientProvider {
       SESSION_KEYS.SERVER_METADATA,
       this.serverUrl,
     );
-    const metadata = sessionStorage.getItem(key);
+    const metadata = getSessionItem(key);
     if (!metadata) {
       return null;
     }
@@ -255,7 +276,7 @@ export class DebugDbOAuthClientProvider extends DbOAuthClientProvider {
 
   clear() {
     super.clear();
-    sessionStorage.removeItem(
+    removeSessionItem(
       getServerSpecificKey(SESSION_KEYS.SERVER_METADATA, this.serverUrl),
     );
   }

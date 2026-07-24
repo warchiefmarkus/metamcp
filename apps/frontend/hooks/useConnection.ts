@@ -34,7 +34,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { McpServerType, McpServerTypeEnum } from "@repo/zod-types";
 import { useMemoizedFn } from "ahooks";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { z } from "zod";
 
@@ -99,6 +99,8 @@ export function useConnection({
     { request: string; response?: string }[]
   >([]);
   const [completionsSupported, setCompletionsSupported] = useState(true);
+  const connectInFlightRef = useRef(false);
+  const connectionStatusRef = useRef<ConnectionStatus>("disconnected");
 
   // Fetch timeout configurations from the database
   const { data: mcpTimeout } = trpc.frontend.config.getMcpTimeout.useQuery(
@@ -123,6 +125,10 @@ export function useConnection({
       },
     ]);
   });
+
+  useEffect(() => {
+    connectionStatusRef.current = connectionStatus;
+  }, [connectionStatus]);
 
   const makeRequest = useMemoizedFn(
     async <T extends z.ZodType>(
@@ -310,9 +316,23 @@ export function useConnection({
 
   const connect = useMemoizedFn(
     async (_e?: unknown, retryCount: number = 0): Promise<void> => {
+      if (
+        connectInFlightRef.current ||
+        connectionStatusRef.current === "connected" ||
+        connectionStatusRef.current === "connecting"
+      ) {
+        return;
+      }
+
+      connectInFlightRef.current = true;
+      connectionStatusRef.current = "connecting";
+      setConnectionStatus("connecting");
+
       // Skip connection if hook is disabled
       if (!enabled) {
         console.warn("Cannot connect: useConnection hook is disabled");
+        connectInFlightRef.current = false;
+        connectionStatusRef.current = "disconnected";
         setConnectionStatus("disconnected");
         return;
       }
@@ -324,6 +344,8 @@ export function useConnection({
           console.error(
             "Cannot connect: Transport type not defined or not fetched",
           );
+          connectInFlightRef.current = false;
+          connectionStatusRef.current = "error";
           setConnectionStatus("error");
           return;
         }
@@ -347,6 +369,8 @@ export function useConnection({
       try {
         await checkProxyHealth();
       } catch {
+        connectInFlightRef.current = false;
+        connectionStatusRef.current = "error-connecting-to-proxy";
         setConnectionStatus("error-connecting-to-proxy");
         return;
       }
@@ -504,6 +528,8 @@ export function useConnection({
 
             default:
               console.error(`Unsupported transport type: ${transportType}`);
+              connectInFlightRef.current = false;
+              connectionStatusRef.current = "error";
               setConnectionStatus("error");
               return;
           }
@@ -573,17 +599,24 @@ export function useConnection({
             toast.error(
               "Please enter the session token from the proxy server console in the Configuration settings.",
             );
+            connectInFlightRef.current = false;
+            connectionStatusRef.current = "error";
             setConnectionStatus("error");
             return;
           }
 
           const shouldRetry = await handleAuthError(error);
           if (shouldRetry) {
+            connectInFlightRef.current = false;
+            connectionStatusRef.current = "disconnected";
+            setConnectionStatus("disconnected");
             return connect(undefined, retryCount + 1);
           }
           if (is401Error(error)) {
             // Don't set error state if we're about to redirect for auth
-
+            connectInFlightRef.current = false;
+            connectionStatusRef.current = "disconnected";
+            setConnectionStatus("disconnected");
             return;
           }
           throw error;
@@ -606,15 +639,22 @@ export function useConnection({
         }
 
         setMcpClient(client);
+        connectInFlightRef.current = false;
+        connectionStatusRef.current = "connected";
         setConnectionStatus("connected");
       } catch (e) {
         console.error(e);
+        connectInFlightRef.current = false;
+        connectionStatusRef.current = "error";
         setConnectionStatus("error");
       }
     },
   );
 
   const disconnect = useMemoizedFn(async () => {
+    connectInFlightRef.current = false;
+    connectionStatusRef.current = "disconnected";
+
     try {
       if (
         transportType === McpServerTypeEnum.Enum.STREAMABLE_HTTP &&

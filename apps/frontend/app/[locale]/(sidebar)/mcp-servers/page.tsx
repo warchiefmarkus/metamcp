@@ -37,6 +37,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useTranslations } from "@/hooks/useTranslations";
+import { useMounted } from "@/hooks/use-mounted";
 import { trpc } from "@/lib/trpc";
 import { createTranslatedZodResolver } from "@/lib/zod-resolver";
 
@@ -44,6 +45,7 @@ import { ExportImportButtons } from "./export-import-buttons";
 import { McpServersList } from "./mcp-servers-list";
 
 export default function McpServersPage() {
+  const mounted = useMounted();
   const { t } = useTranslations();
   const [isDialogOpen, setIsDialogOpen] = useState(false);
 
@@ -157,6 +159,7 @@ export default function McpServersPage() {
         </div>
         <div className="flex items-center gap-2">
           <ExportImportButtons />
+          {mounted ? (
           <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
             <DialogTrigger asChild>
               <Button>
@@ -459,6 +462,12 @@ export default function McpServersPage() {
               </Form>
             </DialogContent>
           </Dialog>
+          ) : (
+            <Button disabled suppressHydrationWarning>
+              <Plus className="mr-2 h-4 w-4" />
+              {t("mcp-servers:addServer")}
+            </Button>
+          )}
         </div>
       </div>
 

@@ -20,9 +20,11 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { useTranslations } from "@/hooks/useTranslations";
+import { useMounted } from "@/hooks/use-mounted";
 import { trpc } from "@/lib/trpc";
 
 export function ExportImportButtons() {
+  const mounted = useMounted();
   const { t } = useTranslations();
   const [importOpen, setImportOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
@@ -193,6 +195,21 @@ export function ExportImportButtons() {
 
     bulkImportMutation.mutate(apiPayload);
   };
+
+  if (!mounted) {
+    return (
+      <div className="flex gap-2" suppressHydrationWarning>
+        <Button variant="outline" disabled>
+          <Download className="mr-2 h-4 w-4" />
+          {t("mcp-servers:export.exportJson")}
+        </Button>
+        <Button variant="outline" disabled>
+          <Upload className="mr-2 h-4 w-4" />
+          {t("mcp-servers:import.importJson")}
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex gap-2">

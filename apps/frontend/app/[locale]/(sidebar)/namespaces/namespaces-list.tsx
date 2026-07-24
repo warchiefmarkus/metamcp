@@ -281,6 +281,7 @@ export function NamespacesList() {
             <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input
               placeholder={t("namespaces.searchPlaceholder")}
+              value=""
               className="pl-8"
               disabled
             />
@@ -304,6 +305,7 @@ export function NamespacesList() {
             <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input
               placeholder={t("namespaces.searchPlaceholder")}
+              value=""
               className="pl-8"
               disabled
             />
