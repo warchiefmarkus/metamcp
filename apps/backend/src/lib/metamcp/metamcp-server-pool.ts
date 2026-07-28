@@ -367,6 +367,10 @@ export class MetaMcpServerPool {
     return mcpServerPool.getPoolStatus();
   }
 
+  getMcpServerConnectionDetails() {
+    return mcpServerPool.getConnectionDetails();
+  }
+
   /**
    * Invalidate and refresh idle server for a specific namespace
    * This should be called when a namespace's MCP servers list changes

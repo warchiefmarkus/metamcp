@@ -41,6 +41,7 @@ const getSafeNpxCwd = (command: string): string | undefined => {
 export interface ConnectedClient {
   client: Client;
   cleanup: () => Promise<void>;
+  getProcessId: () => number | null;
   onProcessCrash?: (exitCode: number | null, signal: string | null) => void;
 }
 
@@ -265,6 +266,10 @@ export const connectMetaMcpClient = async (
           await transport!.close();
           await client!.close();
         },
+        getProcessId: () =>
+          transport instanceof ProcessManagedStdioTransport
+            ? transport.pid
+            : null,
         onProcessCrash: (exitCode, signal) => {
           logger.warn(
             `Process crash detected for server ${serverParams.name} (${serverParams.uuid}): code=${exitCode}, signal=${signal}`,

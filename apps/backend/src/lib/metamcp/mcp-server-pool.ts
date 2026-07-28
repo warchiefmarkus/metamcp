@@ -17,6 +17,18 @@ export interface McpServerPoolStatus {
   persistentServerUuids: string[];
 }
 
+export type McpConnectionKind = "IDLE" | "SESSION" | "PERSISTENT";
+
+export interface McpConnectionDetails {
+  serverUuid: string;
+  serverName: string;
+  serverType: ServerParameters["type"];
+  kind: McpConnectionKind;
+  processId: number | null;
+  sessionIds: string[];
+  inFlight: number;
+}
+
 interface PersistentClientEntry {
   client: ConnectedClient;
   lastUsedAt: number;
@@ -574,6 +586,90 @@ export class McpServerPool {
       idleServerUuids: Object.keys(this.idleSessions),
       persistentServerUuids: Object.keys(this.persistentSessions),
     };
+  }
+
+  /**
+   * Get individual MCP connections for diagnostics and host UI.
+   */
+  getConnectionDetails(): McpConnectionDetails[] {
+    const details: McpConnectionDetails[] = [];
+    const persistentClients = new Set(
+      Object.values(this.persistentSessions).map((entry) => entry.client),
+    );
+
+    const createDetails = (
+      serverUuid: string,
+      client: ConnectedClient,
+      kind: McpConnectionKind,
+      sessionIds: string[],
+      inFlight = 0,
+    ): McpConnectionDetails => {
+      const params = this.serverParamsCache[serverUuid];
+      return {
+        serverUuid,
+        serverName: params?.name || serverUuid,
+        serverType: params?.type || "STDIO",
+        kind,
+        processId: client.getProcessId(),
+        sessionIds: [...sessionIds].sort(),
+        inFlight,
+      };
+    };
+
+    for (const [serverUuid, client] of Object.entries(this.idleSessions)) {
+      details.push(createDetails(serverUuid, client, "IDLE", []));
+    }
+
+    for (const [serverUuid, entry] of Object.entries(this.persistentSessions)) {
+      const sessionIds = Object.entries(this.activeSessions)
+        .filter(([_sessionId, servers]) => servers[serverUuid] === entry.client)
+        .map(([sessionId]) => sessionId);
+      details.push(
+        createDetails(
+          serverUuid,
+          entry.client,
+          "PERSISTENT",
+          sessionIds,
+          entry.inFlight,
+        ),
+      );
+    }
+
+    const sessionClients = new Map<
+      ConnectedClient,
+      { serverUuid: string; sessionIds: string[] }
+    >();
+    for (const [sessionId, servers] of Object.entries(this.activeSessions)) {
+      for (const [serverUuid, client] of Object.entries(servers)) {
+        if (persistentClients.has(client)) {
+          continue;
+        }
+        const existing = sessionClients.get(client);
+        if (existing) {
+          existing.sessionIds.push(sessionId);
+        } else {
+          sessionClients.set(client, { serverUuid, sessionIds: [sessionId] });
+        }
+      }
+    }
+
+    for (const [client, connection] of sessionClients) {
+      details.push(
+        createDetails(
+          connection.serverUuid,
+          client,
+          "SESSION",
+          connection.sessionIds,
+        ),
+      );
+    }
+
+    return details.sort(
+      (left, right) =>
+        left.kind.localeCompare(right.kind) ||
+        left.serverName.localeCompare(right.serverName) ||
+        (left.processId || 0) - (right.processId || 0),
+    );
   }
 
   /**

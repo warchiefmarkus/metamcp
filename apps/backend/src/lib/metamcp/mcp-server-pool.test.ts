@@ -43,9 +43,13 @@ const sessionParams = (): ServerParameters => ({
   connectionMode: McpConnectionModeEnum.Enum.SESSION,
 });
 
-const createClient = () => {
+const createClient = (processId = 1234) => {
   const cleanup = vi.fn(async () => undefined);
-  return { client: {} as never, cleanup };
+  return {
+    client: {} as never,
+    cleanup,
+    getProcessId: () => processId,
+  };
 };
 
 async function loadPool() {
@@ -90,6 +94,17 @@ describe("McpServerPool persistent lifecycle", () => {
       idle: 0,
       totalConnections: 1,
     });
+    expect(pool.getConnectionDetails()).toEqual([
+      {
+        serverUuid: "playwright-uuid",
+        serverName: "playwright",
+        serverType: "STDIO",
+        kind: "PERSISTENT",
+        processId: 1234,
+        sessionIds: ["session-a", "session-b"],
+        inFlight: 0,
+      },
+    ]);
 
     await pool.cleanupSession("session-a");
     expect(client.cleanup).not.toHaveBeenCalled();
@@ -188,6 +203,17 @@ describe("McpServerPool persistent lifecycle", () => {
     const pool = await loadPool();
 
     await pool.getSession("session-a", "playwright-uuid", sessionParams());
+    expect(pool.getConnectionDetails()).toEqual([
+      {
+        serverUuid: "playwright-uuid",
+        serverName: "playwright",
+        serverType: "STDIO",
+        kind: "SESSION",
+        processId: 1234,
+        sessionIds: ["session-a"],
+        inFlight: 0,
+      },
+    ]);
     await pool.cleanupSession("session-a");
     expect(firstClient.cleanup).toHaveBeenCalledTimes(1);
     expect(pool.getPoolStatus().idle).toBe(0);

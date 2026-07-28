@@ -157,6 +157,7 @@ streamableHttpRouter.get("/health/sessions", (req, res) => {
   const sessionIds = sessionManager.getSessionIds();
   const poolStatus = metaMcpServerPool.getPoolStatus();
   const mcpPoolStatus = metaMcpServerPool.getMcpServerPoolStatus();
+  const mcpConnections = metaMcpServerPool.getMcpServerConnectionDetails();
 
   res.json({
     timestamp: new Date().toISOString(),
@@ -166,6 +167,7 @@ streamableHttpRouter.get("/health/sessions", (req, res) => {
     },
     metaMcpPoolStatus: poolStatus,
     mcpServerPoolStatus: mcpPoolStatus,
+    mcpConnections,
     activeSessionRequests: Array.from(sessionInFlight.values()).reduce(
       (total, count) => total + count,
       0,
