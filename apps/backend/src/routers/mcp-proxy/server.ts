@@ -222,6 +222,7 @@ const SESSION_IDLE_TIMEOUT_MS = Number(
   process.env.METAMCP_SESSION_IDLE_TIMEOUT_MS || "60000",
 );
 const sessionTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+const sessionInFlight: Map<string, number> = new Map();
 
 const clearSessionTimer = (sessionId: string) => {
   const timer = sessionTimers.get(sessionId);
@@ -232,18 +233,29 @@ const clearSessionTimer = (sessionId: string) => {
 };
 
 const scheduleSessionTimer = (sessionId: string) => {
-  if (!Number.isFinite(SESSION_IDLE_TIMEOUT_MS) || SESSION_IDLE_TIMEOUT_MS <= 0) {
+  if (
+    !Number.isFinite(SESSION_IDLE_TIMEOUT_MS) ||
+    SESSION_IDLE_TIMEOUT_MS <= 0 ||
+    (sessionInFlight.get(sessionId) || 0) > 0
+  ) {
     return;
   }
 
   clearSessionTimer(sessionId);
 
   const timer = setTimeout(() => {
+    if ((sessionInFlight.get(sessionId) || 0) > 0) {
+      scheduleSessionTimer(sessionId);
+      return;
+    }
     logger.info(
       `Session ${sessionId} idle for ${SESSION_IDLE_TIMEOUT_MS}ms, cleaning up`,
     );
     cleanupSession(sessionId).catch((error) => {
-      logger.error(`Error during idle cleanup for session ${sessionId}:`, error);
+      logger.error(
+        `Error during idle cleanup for session ${sessionId}:`,
+        error,
+      );
     });
   }, SESSION_IDLE_TIMEOUT_MS);
 
@@ -251,9 +263,50 @@ const scheduleSessionTimer = (sessionId: string) => {
   sessionTimers.set(sessionId, timer);
 };
 
+const beginSessionRequest = (sessionId: string) => {
+  clearSessionTimer(sessionId);
+  sessionInFlight.set(sessionId, (sessionInFlight.get(sessionId) || 0) + 1);
+};
+
+const endSessionRequest = (sessionId: string) => {
+  const next = Math.max(0, (sessionInFlight.get(sessionId) || 1) - 1);
+  if (next === 0) {
+    sessionInFlight.delete(sessionId);
+    scheduleSessionTimer(sessionId);
+  } else {
+    sessionInFlight.set(sessionId, next);
+  }
+};
+
+const handleSessionRequest = async (
+  sessionId: string,
+  res: express.Response,
+  action: () => Promise<void>,
+) => {
+  beginSessionRequest(sessionId);
+  let completed = false;
+  const complete = () => {
+    if (completed) return;
+    completed = true;
+    res.off("finish", complete);
+    res.off("close", complete);
+    endSessionRequest(sessionId);
+  };
+  res.once("finish", complete);
+  res.once("close", complete);
+  try {
+    await action();
+    if (res.writableEnded) complete();
+  } catch (error) {
+    complete();
+    throw error;
+  }
+};
+
 // Session cleanup function
 const cleanupSession = async (sessionId: string) => {
   clearSessionTimer(sessionId);
+  sessionInFlight.delete(sessionId);
   logger.info(`Cleaning up proxy session ${sessionId}`);
 
   // Clean up web app transport
@@ -437,8 +490,9 @@ serverRouter.get("/mcp", async (req, res) => {
       res.status(404).end("Session not found");
       return;
     } else {
-      scheduleSessionTimer(sessionId);
-      await transport.handleRequest(req, res);
+      await handleSessionRequest(sessionId, res, async () => {
+        await transport.handleRequest(req, res);
+      });
     }
   } catch (error) {
     logger.error("Error in /mcp route:", error);
@@ -514,7 +568,6 @@ serverRouter.post("/mcp", async (req, res) => {
           if (serverTransport) {
             serverTransports.set(sessionId, serverTransport);
           }
-          scheduleSessionTimer(sessionId);
           logger.info("Client <-> Proxy  sessionId: " + sessionId);
         },
       });
@@ -541,10 +594,12 @@ serverRouter.post("/mcp", async (req, res) => {
       }
 
       // Handle the actual request - don't pass req.body since it wasn't parsed
-      await (webAppTransport as StreamableHTTPServerTransport).handleRequest(
-        req,
-        res,
-      );
+      await handleSessionRequest(newSessionId, res, async () => {
+        await (webAppTransport as StreamableHTTPServerTransport).handleRequest(
+          req,
+          res,
+        );
+      });
     } catch (error) {
       logger.error("Error in /mcp POST route:", error);
       res.status(500).json(error);
@@ -558,11 +613,12 @@ serverRouter.post("/mcp", async (req, res) => {
       if (!transport) {
         res.status(404).end("Transport not found for sessionId " + sessionId);
       } else {
-        scheduleSessionTimer(sessionId);
-        await (transport as StreamableHTTPServerTransport).handleRequest(
-          req,
-          res,
-        );
+        await handleSessionRequest(sessionId, res, async () => {
+          await (transport as StreamableHTTPServerTransport).handleRequest(
+            req,
+            res,
+          );
+        });
       }
     } catch (error) {
       logger.error("Error in /mcp route:", error);

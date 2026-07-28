@@ -1,6 +1,8 @@
-import { z } from "zod";
+﻿import { z } from "zod";
 
 export const McpServerTypeEnum = z.enum(["STDIO", "SSE", "STREAMABLE_HTTP"]);
+export const McpConnectionModeEnum = z.enum(["SESSION", "PERSISTENT"]);
+export const DEFAULT_MCP_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 export const McpServerStatusEnum = z.enum(["ACTIVE", "INACTIVE"]);
 
 export const McpServerErrorStatusEnum = z.enum(["NONE", "ERROR"]);
@@ -25,6 +27,8 @@ export const createServerFormSchema = z
     headers: z.string().optional(),
     env: z.string().optional(),
     user_id: z.string().nullable().optional(),
+    connectionMode: McpConnectionModeEnum,
+    idleTimeoutMinutes: z.coerce.number().int().min(1).max(1440),
   })
   .refine(
     (data) => {
@@ -87,6 +91,8 @@ export const EditServerFormSchema = z
     headers: z.string().optional(),
     env: z.string().optional(),
     user_id: z.string().nullable().optional(),
+    connectionMode: McpConnectionModeEnum,
+    idleTimeoutMinutes: z.coerce.number().int().min(1).max(1440),
   })
   .refine(
     (data) => {
@@ -151,6 +157,8 @@ export const CreateMcpServerRequestSchema = z
     bearerToken: z.string().optional(),
     headers: z.record(z.string()).optional(),
     user_id: z.string().nullable().optional(),
+    connectionMode: McpConnectionModeEnum.optional(),
+    idleTimeoutMs: z.number().int().min(60_000).max(86_400_000).optional(),
   })
   .refine(
     (data) => {
@@ -190,6 +198,8 @@ export const McpServerSchema = z.object({
   bearerToken: z.string().nullable(),
   headers: z.record(z.string()),
   user_id: z.string().nullable(),
+  connectionMode: McpConnectionModeEnum,
+  idleTimeoutMs: z.number().int(),
   error_status: McpServerErrorStatusEnum.optional(),
 });
 
@@ -220,6 +230,8 @@ export const BulkImportMcpServerSchema = z
     url: z.string().optional(),
     headers: z.record(z.string()).optional(),
     description: z.string().optional(),
+    connectionMode: McpConnectionModeEnum.optional(),
+    idleTimeoutMs: z.number().int().min(60_000).max(86_400_000).optional(),
     type: z
       .string()
       .optional()
@@ -281,6 +293,7 @@ export const BulkImportMcpServersResponseSchema = z.object({
 
 // MCP Server types
 export type McpServerType = z.infer<typeof McpServerTypeEnum>;
+export type McpConnectionMode = z.infer<typeof McpConnectionModeEnum>;
 export type CreateMcpServerRequest = z.infer<
   typeof CreateMcpServerRequestSchema
 >;
@@ -333,6 +346,8 @@ export const UpdateMcpServerRequestSchema = z
     bearerToken: z.string().optional(),
     headers: z.record(z.string()).optional(),
     user_id: z.string().nullable().optional(),
+    connectionMode: McpConnectionModeEnum.optional(),
+    idleTimeoutMs: z.number().int().min(60_000).max(86_400_000).optional(),
   })
   .refine(
     (data) => {
@@ -403,6 +418,8 @@ export const McpServerCreateInputSchema = z.object({
   bearerToken: z.string().nullable().optional(),
   headers: z.record(z.string()).optional(),
   user_id: z.string().nullable().optional(),
+  connectionMode: McpConnectionModeEnum.optional(),
+  idleTimeoutMs: z.number().int().optional(),
 });
 
 export const McpServerUpdateInputSchema = z.object({
@@ -427,6 +444,8 @@ export const McpServerUpdateInputSchema = z.object({
   bearerToken: z.string().nullable().optional(),
   headers: z.record(z.string()).optional(),
   user_id: z.string().nullable().optional(),
+  connectionMode: McpConnectionModeEnum.optional(),
+  idleTimeoutMs: z.number().int().optional(),
 });
 
 export type McpServerCreateInput = z.infer<typeof McpServerCreateInputSchema>;
@@ -447,6 +466,8 @@ export const DatabaseMcpServerSchema = z.object({
   bearerToken: z.string().nullable(),
   headers: z.record(z.string()),
   user_id: z.string().nullable(),
+  connectionMode: McpConnectionModeEnum,
+  idleTimeoutMs: z.number().int(),
 });
 
 export type DatabaseMcpServer = z.infer<typeof DatabaseMcpServerSchema>;

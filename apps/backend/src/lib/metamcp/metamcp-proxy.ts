@@ -105,7 +105,9 @@ export const createServer = async (
   const toolToClient: Record<string, ConnectedClient> = {};
   const toolToServerUuid: Record<string, string> = {};
   const promptToClient: Record<string, ConnectedClient> = {};
+  const promptToServerUuid: Record<string, string> = {};
   const resourceToClient: Record<string, ConnectedClient> = {};
+  const resourceToServerUuid: Record<string, string> = {};
 
   // Helper function to detect if a server is the same instance
   const isSameServerInstance = (
@@ -225,15 +227,20 @@ export const createServer = async (
 
           while (hasMore) {
             const result: z.infer<typeof ListToolsResultSchema> =
-              await session.client.request(
-                {
-                  method: "tools/list",
-                  params: {
-                    cursor: cursor,
-                    _meta: request.params?._meta,
-                  },
-                },
-                ListToolsResultSchema,
+              await mcpServerPool.withClientUsage(
+                mcpServerUuid,
+                session,
+                async () =>
+                  await session.client.request(
+                    {
+                      method: "tools/list",
+                      params: {
+                        cursor: cursor,
+                        _meta: request.params?._meta,
+                      },
+                    },
+                    ListToolsResultSchema,
+                  ),
               );
 
             if (result.tools && result.tools.length > 0) {
@@ -370,12 +377,17 @@ export const createServer = async (
 
                 while (hasMore && !foundTool) {
                   const result: z.infer<typeof ListToolsResultSchema> =
-                    await session.client.request(
-                      {
-                        method: "tools/list",
-                        params: { cursor: cursor },
-                      },
-                      ListToolsResultSchema,
+                    await mcpServerPool.withClientUsage(
+                      mcpServerUuid,
+                      session,
+                      async () =>
+                        await session.client.request(
+                          {
+                            method: "tools/list",
+                            params: { cursor: cursor },
+                          },
+                          ListToolsResultSchema,
+                        ),
                     );
 
                   if (
@@ -438,17 +450,22 @@ export const createServer = async (
         maxTotalTimeout,
       };
       // Use the correct schema for tool calls
-      const result = await clientForTool.client.request(
-        {
-          method: "tools/call",
-          params: {
-            name: originalToolName,
-            arguments: args || {},
-            _meta: request.params._meta,
-          },
-        },
-        CompatibilityCallToolResultSchema,
-        mcpRequestOptions,
+      const result = await mcpServerPool.withClientUsage(
+        serverUuid,
+        clientForTool,
+        async () =>
+          await clientForTool.client.request(
+            {
+              method: "tools/call",
+              params: {
+                name: originalToolName,
+                arguments: args || {},
+                _meta: request.params._meta,
+              },
+            },
+            CompatibilityCallToolResultSchema,
+            mcpRequestOptions,
+          ),
       );
 
       // Cast the result to CallToolResult type
@@ -507,6 +524,11 @@ export const createServer = async (
     }
 
     try {
+      const promptServerUuid = promptToServerUuid[name];
+      if (!promptServerUuid) {
+        throw new Error(`Server UUID not found for prompt: ${name}`);
+      }
+
       // Parse the prompt name using shared utility
       const parsed = parseToolName(name);
       if (!parsed) {
@@ -514,16 +536,21 @@ export const createServer = async (
       }
 
       const promptName = parsed.originalToolName;
-      const response = await clientForPrompt.client.request(
-        {
-          method: "prompts/get",
-          params: {
-            name: promptName,
-            arguments: request.params.arguments || {},
-            _meta: request.params._meta,
-          },
-        },
-        GetPromptResultSchema,
+      const response = await mcpServerPool.withClientUsage(
+        promptServerUuid,
+        clientForPrompt,
+        async () =>
+          await clientForPrompt.client.request(
+            {
+              method: "prompts/get",
+              params: {
+                name: promptName,
+                arguments: request.params.arguments || {},
+                _meta: request.params._meta,
+              },
+            },
+            GetPromptResultSchema,
+          ),
       );
 
       return response;
@@ -603,21 +630,27 @@ export const createServer = async (
         const serverName =
           params.name || session.client.getServerVersion()?.name || "";
         try {
-          const result = await session.client.request(
-            {
-              method: "prompts/list",
-              params: {
-                cursor: request.params?.cursor,
-                _meta: request.params?._meta,
-              },
-            },
-            ListPromptsResultSchema,
+          const result = await mcpServerPool.withClientUsage(
+            uuid,
+            session,
+            async () =>
+              await session.client.request(
+                {
+                  method: "prompts/list",
+                  params: {
+                    cursor: request.params?.cursor,
+                    _meta: request.params?._meta,
+                  },
+                },
+                ListPromptsResultSchema,
+              ),
           );
 
           if (result.prompts) {
             const promptsWithSource = result.prompts.map((prompt) => {
               const promptName = `${sanitizeName(serverName)}__${prompt.name}`;
               promptToClient[promptName] = session;
+              promptToServerUuid[promptName] = uuid;
               return {
                 ...prompt,
                 name: promptName,
@@ -704,20 +737,26 @@ export const createServer = async (
         const serverName =
           params.name || session.client.getServerVersion()?.name || "";
         try {
-          const result = await session.client.request(
-            {
-              method: "resources/list",
-              params: {
-                cursor: request.params?.cursor,
-                _meta: request.params?._meta,
-              },
-            },
-            ListResourcesResultSchema,
+          const result = await mcpServerPool.withClientUsage(
+            uuid,
+            session,
+            async () =>
+              await session.client.request(
+                {
+                  method: "resources/list",
+                  params: {
+                    cursor: request.params?.cursor,
+                    _meta: request.params?._meta,
+                  },
+                },
+                ListResourcesResultSchema,
+              ),
           );
 
           if (result.resources) {
             const resourcesWithSource = result.resources.map((resource) => {
               resourceToClient[resource.uri] = session;
+              resourceToServerUuid[resource.uri] = uuid;
               return {
                 ...resource,
                 name: resource.name || "",
@@ -747,15 +786,24 @@ export const createServer = async (
     }
 
     try {
-      return await clientForResource.client.request(
-        {
-          method: "resources/read",
-          params: {
-            uri,
-            _meta: request.params._meta,
-          },
-        },
-        ReadResourceResultSchema,
+      const resourceServerUuid = resourceToServerUuid[uri];
+      if (!resourceServerUuid) {
+        throw new Error(`Server UUID not found for resource: ${uri}`);
+      }
+      return await mcpServerPool.withClientUsage(
+        resourceServerUuid,
+        clientForResource,
+        async () =>
+          await clientForResource.client.request(
+            {
+              method: "resources/read",
+              params: {
+                uri,
+                _meta: request.params._meta,
+              },
+            },
+            ReadResourceResultSchema,
+          ),
       );
     } catch (error) {
       logger.error(
@@ -835,15 +883,20 @@ export const createServer = async (
             params.name || session.client.getServerVersion()?.name || "";
 
           try {
-            const result = await session.client.request(
-              {
-                method: "resources/templates/list",
-                params: {
-                  cursor: request.params?.cursor,
-                  _meta: request.params?._meta,
-                },
-              },
-              ListResourceTemplatesResultSchema,
+            const result = await mcpServerPool.withClientUsage(
+              uuid,
+              session,
+              async () =>
+                await session.client.request(
+                  {
+                    method: "resources/templates/list",
+                    params: {
+                      cursor: request.params?.cursor,
+                      _meta: request.params?._meta,
+                    },
+                  },
+                  ListResourceTemplatesResultSchema,
+                ),
             );
 
             if (result.resourceTemplates) {

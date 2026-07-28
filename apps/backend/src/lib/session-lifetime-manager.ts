@@ -42,7 +42,11 @@ export class SessionLifetimeManagerImpl<T>
   }
 
   getSession(sessionId: string): T | undefined {
-    return this.sessions.get(sessionId);
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      this.sessionTimestamps.set(sessionId, Date.now());
+    }
+    return session;
   }
 
   getAllSessions(): Map<string, T> {

@@ -3,6 +3,7 @@
 import {
   CreateMcpServerRequest,
   CreateServerFormData,
+  McpConnectionModeEnum,
   createServerFormSchema,
   McpServerTypeEnum,
 } from "@repo/zod-types";
@@ -62,6 +63,8 @@ export default function McpServersPage() {
       bearerToken: "",
       headers: "",
       user_id: undefined, // Default to private (current user)
+      connectionMode: McpConnectionModeEnum.Enum.SESSION,
+      idleTimeoutMinutes: 30,
     },
   });
 
@@ -138,6 +141,8 @@ export default function McpServersPage() {
       bearerToken: data.bearerToken,
       headers: headersObject,
       user_id: data.user_id,
+      connectionMode: data.connectionMode,
+      idleTimeoutMs: data.idleTimeoutMinutes * 60 * 1000,
     };
 
     createMutation.mutate(request);
@@ -167,7 +172,7 @@ export default function McpServersPage() {
                 {t("mcp-servers:addServer")}
               </Button>
             </DialogTrigger>
-            <DialogContent className="sm:max-w-[500px]">
+            <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[560px]">
               <DialogHeader>
                 <DialogTitle>{t("mcp-servers:addServer")}</DialogTitle>
                 <DialogDescription>
@@ -320,6 +325,86 @@ export default function McpServersPage() {
                   {/* STDIO specific fields */}
                   {form.watch("type") === McpServerTypeEnum.Enum.STDIO && (
                     <>
+                      <FormField
+                        control={form.control}
+                        name="connectionMode"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>
+                              {t("mcp-servers:connectionMode")}
+                            </FormLabel>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  className="w-full justify-between"
+                                >
+                                  {field.value ===
+                                  McpConnectionModeEnum.Enum.PERSISTENT
+                                    ? t("mcp-servers:persistentConnection")
+                                    : t("mcp-servers:sessionConnection")}
+                                  <ChevronDown className="ml-2 h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent className="w-[var(--radix-dropdown-menu-trigger-width)]">
+                                <DropdownMenuItem
+                                  onClick={() =>
+                                    field.onChange(
+                                      McpConnectionModeEnum.Enum.SESSION,
+                                    )
+                                  }
+                                >
+                                  {t("mcp-servers:sessionConnection")}
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onClick={() =>
+                                    field.onChange(
+                                      McpConnectionModeEnum.Enum.PERSISTENT,
+                                    )
+                                  }
+                                >
+                                  {t("mcp-servers:persistentConnection")}
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                            <p className="text-xs text-muted-foreground">
+                              {t("mcp-servers:connectionModeHelp")}
+                            </p>
+                          </FormItem>
+                        )}
+                      />
+
+                      {form.watch("connectionMode") ===
+                        McpConnectionModeEnum.Enum.PERSISTENT && (
+                        <FormField
+                          control={form.control}
+                          name="idleTimeoutMinutes"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>
+                                {t("mcp-servers:idleTimeoutMinutes")}
+                              </FormLabel>
+                              <FormControl>
+                                <Input
+                                  type="number"
+                                  min={1}
+                                  max={1440}
+                                  value={field.value}
+                                  onChange={(event) =>
+                                    field.onChange(Number(event.target.value))
+                                  }
+                                />
+                              </FormControl>
+                              <p className="text-xs text-muted-foreground">
+                                {t("mcp-servers:idleTimeoutHelp")}
+                              </p>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      )}
+
                       <FormField
                         control={form.control}
                         name="command"

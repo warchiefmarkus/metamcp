@@ -3,6 +3,7 @@
 import {
   EditServerFormData,
   EditServerFormSchema,
+  McpConnectionModeEnum,
   McpServer,
   McpServerTypeEnum,
   UpdateMcpServerRequest,
@@ -159,6 +160,8 @@ export function EditMcpServer({
       headers: "",
       env: "",
       user_id: undefined,
+      connectionMode: McpConnectionModeEnum.Enum.SESSION,
+      idleTimeoutMinutes: 30,
     },
   });
 
@@ -203,6 +206,11 @@ export function EditMcpServer({
           .map(([key, value]) => `${key}=${value}`)
           .join("\n"),
         user_id: server.user_id,
+        connectionMode: server.connectionMode,
+        idleTimeoutMinutes: Math.max(
+          1,
+          Math.round(server.idleTimeoutMs / 60_000),
+        ),
       });
     }
   }, [server, isOpen, editForm]);
@@ -266,6 +274,8 @@ export function EditMcpServer({
         bearerToken: data.bearerToken,
         headers: headersObject,
         user_id: data.user_id,
+        connectionMode: data.connectionMode,
+        idleTimeoutMs: data.idleTimeoutMinutes * 60 * 1000,
       };
 
       // Use tRPC mutation instead of direct fetch
@@ -287,7 +297,7 @@ export function EditMcpServer({
 
   return (
     <Dialog open={isOpen} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-[500px]">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[560px]">
         <DialogHeader>
           <DialogTitle>{t("mcp-servers:editServer")}</DialogTitle>
           <DialogDescription>
@@ -413,6 +423,76 @@ export function EditMcpServer({
 
           {editForm.watch("type") === McpServerTypeEnum.Enum.STDIO && (
             <>
+              <div className="flex flex-col gap-2">
+                <label className="text-sm font-medium">
+                  {t("mcp-servers:connectionMode")}
+                </label>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full justify-between"
+                    >
+                      {editForm.watch("connectionMode") ===
+                      McpConnectionModeEnum.Enum.PERSISTENT
+                        ? t("mcp-servers:persistentConnection")
+                        : t("mcp-servers:sessionConnection")}
+                      <ChevronDown className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent className="w-[var(--radix-dropdown-menu-trigger-width)]">
+                    <DropdownMenuItem
+                      onClick={() =>
+                        editForm.setValue(
+                          "connectionMode",
+                          McpConnectionModeEnum.Enum.SESSION,
+                        )
+                      }
+                    >
+                      {t("mcp-servers:sessionConnection")}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() =>
+                        editForm.setValue(
+                          "connectionMode",
+                          McpConnectionModeEnum.Enum.PERSISTENT,
+                        )
+                      }
+                    >
+                      {t("mcp-servers:persistentConnection")}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <p className="text-xs text-muted-foreground">
+                  {t("mcp-servers:connectionModeHelp")}
+                </p>
+              </div>
+
+              {editForm.watch("connectionMode") ===
+                McpConnectionModeEnum.Enum.PERSISTENT && (
+                <div className="flex flex-col gap-2">
+                  <label
+                    htmlFor="edit-idle-timeout"
+                    className="text-sm font-medium"
+                  >
+                    {t("mcp-servers:idleTimeoutMinutes")}
+                  </label>
+                  <Input
+                    id="edit-idle-timeout"
+                    type="number"
+                    min={1}
+                    max={1440}
+                    {...editForm.register("idleTimeoutMinutes", {
+                      valueAsNumber: true,
+                    })}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {t("mcp-servers:idleTimeoutHelp")}
+                  </p>
+                </div>
+              )}
+
               <div className="flex flex-col gap-2">
                 <label htmlFor="edit-command" className="text-sm font-medium">
                   {t("mcp-servers:command")}

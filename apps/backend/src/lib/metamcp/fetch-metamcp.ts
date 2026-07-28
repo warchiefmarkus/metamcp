@@ -56,6 +56,8 @@ export async function getMcpServers(
         headers: mcpServersTable.headers,
         status: namespaceServerMappingsTable.status,
         error_status: mcpServersTable.error_status,
+        connectionMode: mcpServersTable.connectionMode,
+        idleTimeoutMs: mcpServersTable.idleTimeoutMs,
       })
       .from(mcpServersTable)
       .innerJoin(
@@ -99,6 +101,8 @@ export async function getMcpServers(
         stderr: "inherit" as IOType,
         oauth_tokens: oauthTokens,
         bearerToken: server.bearerToken,
+        connectionMode: server.connectionMode,
+        idleTimeoutMs: server.idleTimeoutMs,
       };
 
       // Process based on server type

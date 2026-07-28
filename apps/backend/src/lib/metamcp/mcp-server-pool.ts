@@ -1,4 +1,4 @@
-import { ServerParameters } from "@repo/zod-types";
+import { McpConnectionModeEnum, ServerParameters } from "@repo/zod-types";
 
 import logger from "@/utils/logger";
 
@@ -9,8 +9,19 @@ import { serverErrorTracker } from "./server-error-tracker";
 export interface McpServerPoolStatus {
   idle: number;
   active: number;
+  persistent: number;
+  persistentInFlight: number;
+  totalConnections: number;
   activeSessionIds: string[];
   idleServerUuids: string[];
+  persistentServerUuids: string[];
+}
+
+interface PersistentClientEntry {
+  client: ConnectedClient;
+  lastUsedAt: number;
+  inFlight: number;
+  idleTimeoutMs: number;
 }
 
 export class McpServerPool {
@@ -28,12 +39,22 @@ export class McpServerPool {
 
   // Session creation timestamps: sessionId -> timestamp
   private sessionTimestamps: Record<string, number> = {};
+  private sessionConnectionVersions: Record<string, number> = {};
 
   // Server parameters cache: serverUuid -> ServerParameters
   private serverParamsCache: Record<string, ServerParameters> = {};
 
   // Track ongoing idle session creation to prevent duplicates
   private creatingIdleSessions: Set<string> = new Set();
+
+  // Persistent stateful clients are shared across short-lived outer MCP sessions.
+  private persistentSessions: Record<string, PersistentClientEntry> = {};
+  private connectingPersistentSessions: Map<
+    string,
+    Promise<ConnectedClient | undefined>
+  > = new Map();
+  private serverConnectionVersions: Record<string, number> = {};
+  private lifecycleVersion = 0;
 
   // Session cleanup timer
   private cleanupTimer: NodeJS.Timeout | null = null;
@@ -46,6 +67,7 @@ export class McpServerPool {
 
   // Maximum total connections (idle + active) to prevent runaway process spawning
   private readonly maxTotalConnections: number;
+  private readonly disableIdleSessions: boolean;
 
   private constructor(
     defaultIdleCount: number = 1,
@@ -53,6 +75,14 @@ export class McpServerPool {
   ) {
     this.defaultIdleCount = defaultIdleCount;
     this.maxTotalConnections = maxTotalConnections;
+    this.disableIdleSessions = ["1", "true", "yes", "y", "on"].includes(
+      (process.env.METAMCP_DISABLE_IDLE_PREWARM || "").trim().toLowerCase(),
+    );
+    if (this.disableIdleSessions) {
+      logger.info(
+        "Underlying MCP idle connection pool disabled via METAMCP_DISABLE_IDLE_PREWARM=true",
+      );
+    }
     this.startCleanupTimer();
   }
 
@@ -77,6 +107,19 @@ export class McpServerPool {
   ): Promise<ConnectedClient | undefined> {
     // Update server params cache
     this.serverParamsCache[serverUuid] = params;
+    const sessionVersion = this.sessionConnectionVersions[sessionId] || 0;
+    const lifecycleVersion = this.lifecycleVersion;
+
+    if (params.connectionMode === McpConnectionModeEnum.Enum.PERSISTENT) {
+      return await this.getPersistentSession(
+        sessionId,
+        sessionVersion,
+        lifecycleVersion,
+        serverUuid,
+        params,
+        namespaceUuid,
+      );
+    }
 
     // Check if we already have an active session for this sessionId and server
     if (this.activeSessions[sessionId]?.[serverUuid]) {
@@ -103,7 +146,9 @@ export class McpServerPool {
       );
 
       // Create a new idle session to replace the one we just used (ASYNC - NON-BLOCKING)
-      this.createIdleSessionAsync(serverUuid, params, namespaceUuid);
+      if (!this.disableIdleSessions) {
+        this.createIdleSessionAsync(serverUuid, params, namespaceUuid);
+      }
 
       return idleClient;
     }
@@ -111,6 +156,14 @@ export class McpServerPool {
     // No idle session available, create a new connection
     const newClient = await this.createNewConnection(params, namespaceUuid);
     if (!newClient) {
+      return undefined;
+    }
+
+    if (
+      this.lifecycleVersion !== lifecycleVersion ||
+      (this.sessionConnectionVersions[sessionId] || 0) !== sessionVersion
+    ) {
+      await newClient.cleanup();
       return undefined;
     }
 
@@ -122,9 +175,117 @@ export class McpServerPool {
     );
 
     // Also create an idle session for future use (ASYNC - NON-BLOCKING)
-    this.createIdleSessionAsync(serverUuid, params, namespaceUuid);
+    if (!this.disableIdleSessions) {
+      this.createIdleSessionAsync(serverUuid, params, namespaceUuid);
+    }
 
     return newClient;
+  }
+
+  private bindSessionClient(
+    sessionId: string,
+    serverUuid: string,
+    client: ConnectedClient,
+  ): void {
+    if (!this.activeSessions[sessionId]) {
+      this.activeSessions[sessionId] = {};
+      this.sessionToServers[sessionId] = new Set();
+    }
+    this.activeSessions[sessionId][serverUuid] = client;
+    this.sessionToServers[sessionId].add(serverUuid);
+    this.sessionTimestamps[sessionId] = Date.now();
+  }
+
+  private async getPersistentSession(
+    sessionId: string,
+    sessionVersion: number,
+    lifecycleVersion: number,
+    serverUuid: string,
+    params: ServerParameters,
+    namespaceUuid?: string,
+  ): Promise<ConnectedClient | undefined> {
+    const existing = this.persistentSessions[serverUuid];
+    if (existing) {
+      existing.lastUsedAt = Date.now();
+      this.bindSessionClient(sessionId, serverUuid, existing.client);
+      return existing.client;
+    }
+
+    const connectionVersion = this.serverConnectionVersions[serverUuid] || 0;
+    let connecting = this.connectingPersistentSessions.get(serverUuid);
+    if (!connecting) {
+      connecting = this.createNewConnection(params, namespaceUuid);
+      this.connectingPersistentSessions.set(serverUuid, connecting);
+    }
+
+    try {
+      const client = await connecting;
+      if (!client) {
+        return undefined;
+      }
+
+      if (
+        this.lifecycleVersion !== lifecycleVersion ||
+        (this.serverConnectionVersions[serverUuid] || 0) !== connectionVersion
+      ) {
+        await client.cleanup();
+        return undefined;
+      }
+
+      const winner = this.persistentSessions[serverUuid];
+      if (winner) {
+        if (winner.client !== client) {
+          await client.cleanup();
+        }
+        winner.lastUsedAt = Date.now();
+        if (
+          (this.sessionConnectionVersions[sessionId] || 0) !== sessionVersion
+        ) {
+          return undefined;
+        }
+        this.bindSessionClient(sessionId, serverUuid, winner.client);
+        return winner.client;
+      }
+
+      this.persistentSessions[serverUuid] = {
+        client,
+        lastUsedAt: Date.now(),
+        inFlight: 0,
+        idleTimeoutMs: Math.max(params.idleTimeoutMs, 60_000),
+      };
+      if ((this.sessionConnectionVersions[sessionId] || 0) !== sessionVersion) {
+        return undefined;
+      }
+      this.bindSessionClient(sessionId, serverUuid, client);
+      logger.info(
+        `Created persistent connection for server ${params.name} (${serverUuid})`,
+      );
+      return client;
+    } finally {
+      if (this.connectingPersistentSessions.get(serverUuid) === connecting) {
+        this.connectingPersistentSessions.delete(serverUuid);
+      }
+    }
+  }
+
+  async withClientUsage<T>(
+    serverUuid: string,
+    client: ConnectedClient,
+    action: () => Promise<T>,
+  ): Promise<T> {
+    const persistent = this.persistentSessions[serverUuid];
+    if (!persistent || persistent.client !== client) {
+      return await action();
+    }
+
+    persistent.inFlight += 1;
+    persistent.lastUsedAt = Date.now();
+    try {
+      return await action();
+    } finally {
+      persistent.inFlight = Math.max(0, persistent.inFlight - 1);
+      persistent.lastUsedAt = Date.now();
+    }
   }
 
   /**
@@ -197,6 +358,13 @@ export class McpServerPool {
     params: ServerParameters,
     namespaceUuid?: string,
   ): Promise<void> {
+    if (
+      this.disableIdleSessions ||
+      params.connectionMode === McpConnectionModeEnum.Enum.PERSISTENT
+    ) {
+      return;
+    }
+
     // Don't create if we already have an idle session for this server
     if (this.idleSessions[serverUuid]) {
       return;
@@ -217,6 +385,13 @@ export class McpServerPool {
     params: ServerParameters,
     namespaceUuid?: string,
   ): void {
+    if (
+      this.disableIdleSessions ||
+      params.connectionMode === McpConnectionModeEnum.Enum.PERSISTENT
+    ) {
+      return;
+    }
+
     // Don't create if we already have an idle session or are already creating one
     if (
       this.idleSessions[serverUuid] ||
@@ -271,6 +446,10 @@ export class McpServerPool {
     serverParams: Record<string, ServerParameters>,
     namespaceUuid?: string,
   ): Promise<void> {
+    if (this.disableIdleSessions) {
+      return;
+    }
+
     const promises = Object.entries(serverParams).map(
       async ([uuid, params]) => {
         if (!this.idleSessions[uuid]) {
@@ -286,39 +465,42 @@ export class McpServerPool {
    * Cleanup a session by sessionId
    */
   async cleanupSession(sessionId: string): Promise<void> {
+    this.sessionConnectionVersions[sessionId] =
+      (this.sessionConnectionVersions[sessionId] || 0) + 1;
     const activeSession = this.activeSessions[sessionId];
     if (!activeSession) {
+      delete this.sessionTimestamps[sessionId];
+      delete this.sessionToServers[sessionId];
       return;
     }
 
-    // Cleanup all connections for this session
     await Promise.allSettled(
-      Object.entries(activeSession).map(async ([_serverUuid, client]) => {
+      Object.entries(activeSession).map(async ([serverUuid, client]) => {
+        const persistent = this.persistentSessions[serverUuid];
+        if (persistent?.client === client) {
+          persistent.lastUsedAt = Date.now();
+          return;
+        }
         await client.cleanup();
       }),
     );
 
-    // Remove from active sessions
     delete this.activeSessions[sessionId];
-
-    // Clean up session timestamp
     delete this.sessionTimestamps[sessionId];
 
-    // Clean up session to servers mapping
     const serverUuids = this.sessionToServers[sessionId];
-    if (serverUuids) {
-      // For each server this session was using, create new idle sessions if needed (ASYNC - NON-BLOCKING)
-      Array.from(serverUuids).forEach((serverUuid) => {
+    if (serverUuids && !this.disableIdleSessions) {
+      for (const serverUuid of serverUuids) {
         const params = this.serverParamsCache[serverUuid];
-        if (params) {
-          // Note: We don't have namespaceUuid here, so we can't track crashes properly
-          // This is a limitation of the current design - we'll need to pass namespaceUuid from the caller
+        if (
+          params &&
+          params.connectionMode !== McpConnectionModeEnum.Enum.PERSISTENT
+        ) {
           this.createIdleSessionAsync(serverUuid, params);
         }
-      });
-
-      delete this.sessionToServers[sessionId];
+      }
     }
+    delete this.sessionToServers[sessionId];
 
     logger.info(`Cleaned up MCP server pool session ${sessionId}`);
   }
@@ -327,28 +509,31 @@ export class McpServerPool {
    * Cleanup all sessions
    */
   async cleanupAll(): Promise<void> {
-    // Cleanup all active sessions
-    const activeSessionIds = Object.keys(this.activeSessions);
-    await Promise.allSettled(
-      activeSessionIds.map((sessionId) => this.cleanupSession(sessionId)),
+    this.lifecycleVersion += 1;
+    const clients = new Set<ConnectedClient>();
+    Object.values(this.idleSessions).forEach((client) => clients.add(client));
+    Object.values(this.persistentSessions).forEach((entry) =>
+      clients.add(entry.client),
+    );
+    Object.values(this.activeSessions).forEach((session) =>
+      Object.values(session).forEach((client) => clients.add(client)),
     );
 
-    // Cleanup all idle sessions
     await Promise.allSettled(
-      Object.entries(this.idleSessions).map(async ([_uuid, client]) => {
-        await client.cleanup();
-      }),
+      Array.from(clients).map(async (client) => await client.cleanup()),
     );
 
-    // Clear all state
     this.idleSessions = {};
     this.activeSessions = {};
+    this.persistentSessions = {};
     this.sessionToServers = {};
     this.sessionTimestamps = {};
+    this.sessionConnectionVersions = {};
     this.serverParamsCache = {};
     this.creatingIdleSessions.clear();
+    this.connectingPersistentSessions.clear();
+    this.serverConnectionVersions = {};
 
-    // Clear cleanup timer
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = null;
@@ -361,18 +546,33 @@ export class McpServerPool {
    * Get pool status for monitoring
    */
   getPoolStatus(): McpServerPoolStatus {
+    const persistentClients = new Set(
+      Object.values(this.persistentSessions).map((entry) => entry.client),
+    );
     const idle = Object.keys(this.idleSessions).length;
-    const active = Object.keys(this.activeSessions).reduce(
-      (total, sessionId) =>
-        total + Object.keys(this.activeSessions[sessionId]).length,
+    const active = Object.values(this.activeSessions).reduce(
+      (total, session) =>
+        total +
+        Object.values(session).filter(
+          (client) => !persistentClients.has(client),
+        ).length,
+      0,
+    );
+    const persistent = Object.keys(this.persistentSessions).length;
+    const persistentInFlight = Object.values(this.persistentSessions).reduce(
+      (total, entry) => total + entry.inFlight,
       0,
     );
 
     return {
       idle,
       active,
+      persistent,
+      persistentInFlight,
+      totalConnections: this.getTotalConnectionCount(),
       activeSessionIds: Object.keys(this.activeSessions),
       idleServerUuids: Object.keys(this.idleSessions),
+      persistentServerUuids: Object.keys(this.persistentSessions),
     };
   }
 
@@ -380,14 +580,19 @@ export class McpServerPool {
    * Get total connection count (idle + active + pending)
    */
   private getTotalConnectionCount(): number {
-    const idle = Object.keys(this.idleSessions).length;
-    const active = Object.keys(this.activeSessions).reduce(
-      (total, sessionId) =>
-        total + Object.keys(this.activeSessions[sessionId]).length,
-      0,
+    const clients = new Set<ConnectedClient>();
+    Object.values(this.idleSessions).forEach((client) => clients.add(client));
+    Object.values(this.persistentSessions).forEach((entry) =>
+      clients.add(entry.client),
     );
-    const pending = this.creatingIdleSessions.size;
-    return idle + active + pending;
+    Object.values(this.activeSessions).forEach((session) =>
+      Object.values(session).forEach((client) => clients.add(client)),
+    );
+    return (
+      clients.size +
+      this.creatingIdleSessions.size +
+      this.connectingPersistentSessions.size
+    );
   }
 
   /**
@@ -446,33 +651,16 @@ export class McpServerPool {
     params: ServerParameters,
     namespaceUuid?: string,
   ): Promise<void> {
-    logger.info(`Invalidating idle session for server ${serverUuid}`);
-
-    // Update server params cache
+    logger.info(`Invalidating connections for server ${serverUuid}`);
     this.serverParamsCache[serverUuid] = params;
+    await this.cleanupServerSessions(serverUuid);
 
-    // Cleanup existing idle session if it exists
-    const existingIdleSession = this.idleSessions[serverUuid];
-    if (existingIdleSession) {
-      try {
-        await existingIdleSession.cleanup();
-        logger.info(
-          `Cleaned up existing idle session for server ${serverUuid}`,
-        );
-      } catch (error) {
-        logger.error(
-          `Error cleaning up existing idle session for server ${serverUuid}:`,
-          error,
-        );
-      }
-      delete this.idleSessions[serverUuid];
+    if (
+      !this.disableIdleSessions &&
+      params.connectionMode !== McpConnectionModeEnum.Enum.PERSISTENT
+    ) {
+      await this.createIdleSession(serverUuid, params, namespaceUuid);
     }
-
-    // Remove from creating set if it's in progress
-    this.creatingIdleSessions.delete(serverUuid);
-
-    // Create a new idle session with updated parameters
-    await this.createIdleSession(serverUuid, params, namespaceUuid);
   }
 
   /**
@@ -494,27 +682,8 @@ export class McpServerPool {
    * This should be called when a server is being deleted
    */
   async cleanupIdleSession(serverUuid: string): Promise<void> {
-    logger.info(`Cleaning up idle session for server ${serverUuid}`);
-
-    // Cleanup existing idle session if it exists
-    const existingIdleSession = this.idleSessions[serverUuid];
-    if (existingIdleSession) {
-      try {
-        await existingIdleSession.cleanup();
-        logger.info(`Cleaned up idle session for server ${serverUuid}`);
-      } catch (error) {
-        logger.error(
-          `Error cleaning up idle session for server ${serverUuid}:`,
-          error,
-        );
-      }
-      delete this.idleSessions[serverUuid];
-    }
-
-    // Remove from creating set if it's in progress
-    this.creatingIdleSessions.delete(serverUuid);
-
-    // Remove from server params cache
+    logger.info(`Cleaning up all connections for server ${serverUuid}`);
+    await this.cleanupServerSessions(serverUuid);
     delete this.serverParamsCache[serverUuid];
   }
 
@@ -531,6 +700,13 @@ export class McpServerPool {
 
     // Update server params cache
     this.serverParamsCache[serverUuid] = params;
+
+    if (
+      this.disableIdleSessions ||
+      params.connectionMode === McpConnectionModeEnum.Enum.PERSISTENT
+    ) {
+      return;
+    }
 
     // Only create if we don't already have one
     if (
@@ -586,43 +762,42 @@ export class McpServerPool {
    * Clean up all sessions for a specific server
    */
   private async cleanupServerSessions(serverUuid: string): Promise<void> {
-    // Clean up idle session
+    this.serverConnectionVersions[serverUuid] =
+      (this.serverConnectionVersions[serverUuid] || 0) + 1;
+    const clients = new Set<ConnectedClient>();
+
     const idleSession = this.idleSessions[serverUuid];
     if (idleSession) {
-      try {
-        await idleSession.cleanup();
-        logger.info(`Cleaned up idle session for crashed server ${serverUuid}`);
-      } catch (error) {
-        logger.error(
-          `Error cleaning up idle session for crashed server ${serverUuid}:`,
-          error,
-        );
-      }
+      clients.add(idleSession);
       delete this.idleSessions[serverUuid];
     }
 
-    // Clean up active sessions that use this server
+    const persistent = this.persistentSessions[serverUuid];
+    if (persistent) {
+      clients.add(persistent.client);
+      delete this.persistentSessions[serverUuid];
+    }
+
+    this.connectingPersistentSessions.delete(serverUuid);
+
     for (const [sessionId, sessionServers] of Object.entries(
       this.activeSessions,
     )) {
-      if (sessionServers[serverUuid]) {
-        try {
-          await sessionServers[serverUuid].cleanup();
-          logger.info(
-            `Cleaned up active session ${sessionId} for crashed server ${serverUuid}`,
-          );
-        } catch (error) {
-          logger.error(
-            `Error cleaning up active session ${sessionId} for crashed server ${serverUuid}:`,
-            error,
-          );
-        }
-        delete sessionServers[serverUuid];
-        this.sessionToServers[sessionId]?.delete(serverUuid);
+      const client = sessionServers[serverUuid];
+      if (!client) continue;
+      clients.add(client);
+      delete sessionServers[serverUuid];
+      this.sessionToServers[sessionId]?.delete(serverUuid);
+      if (Object.keys(sessionServers).length === 0) {
+        delete this.activeSessions[sessionId];
+        delete this.sessionToServers[sessionId];
+        delete this.sessionTimestamps[sessionId];
       }
     }
 
-    // Remove from creating set
+    await Promise.allSettled(
+      Array.from(clients).map(async (client) => await client.cleanup()),
+    );
     this.creatingIdleSessions.delete(serverUuid);
   }
 
@@ -647,13 +822,47 @@ export class McpServerPool {
    * Start the automatic cleanup timer for expired sessions
    */
   private startCleanupTimer(): void {
-    // Check for expired sessions every 5 minutes
-    this.cleanupTimer = setInterval(
-      async () => {
-        await this.cleanupExpiredSessions();
-      },
-      5 * 60 * 1000,
-    ); // 5 minutes
+    this.cleanupTimer = setInterval(async () => {
+      await Promise.allSettled([
+        this.cleanupExpiredSessions(),
+        this.cleanupExpiredPersistentSessions(),
+      ]);
+    }, 60 * 1000);
+    this.cleanupTimer.unref?.();
+  }
+
+  private async cleanupExpiredPersistentSessions(): Promise<void> {
+    const now = Date.now();
+    const expired = Object.entries(this.persistentSessions).filter(
+      ([_serverUuid, entry]) =>
+        entry.inFlight === 0 && now - entry.lastUsedAt > entry.idleTimeoutMs,
+    );
+
+    await Promise.allSettled(
+      expired.map(async ([serverUuid, entry]) => {
+        if (this.persistentSessions[serverUuid] !== entry) {
+          return;
+        }
+        delete this.persistentSessions[serverUuid];
+        for (const [sessionId, sessionServers] of Object.entries(
+          this.activeSessions,
+        )) {
+          if (sessionServers[serverUuid] === entry.client) {
+            delete sessionServers[serverUuid];
+            this.sessionToServers[sessionId]?.delete(serverUuid);
+            if (Object.keys(sessionServers).length === 0) {
+              delete this.activeSessions[sessionId];
+              delete this.sessionToServers[sessionId];
+              delete this.sessionTimestamps[sessionId];
+            }
+          }
+        }
+        await entry.client.cleanup();
+        logger.info(
+          `Cleaned up idle persistent MCP connection for server ${serverUuid}`,
+        );
+      }),
+    );
   }
 
   /**

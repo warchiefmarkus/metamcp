@@ -208,5 +208,11 @@
     "noToolsFromMcp": "MCP 服务器上未找到工具",
     "failedToFetchTools": "从 MCP 服务器获取工具失败",
     "failedToSaveTools": "保存工具失败"
-  }
+  },
+  "connectionMode": "连接生命周期",
+  "sessionConnection": "每个客户端会话",
+  "persistentConnection": "持久共享进程",
+  "connectionModeHelp": "持久模式会在短生命周期的客户端会话之间复用同一个有状态 STDIO 进程。",
+  "idleTimeoutMinutes": "持久连接空闲超时（分钟）",
+  "idleTimeoutHelp": "仅在没有请求运行且超过该空闲时间后关闭进程。"
 }

@@ -1,6 +1,7 @@
 import { OAuthClientInformation } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import {
+  McpConnectionModeEnum,
   McpServerErrorStatusEnum,
   McpServerStatusEnum,
   McpServerTypeEnum,
@@ -26,6 +27,10 @@ export const mcpServerTypeEnum = pgEnum(
 export const mcpServerStatusEnum = pgEnum(
   "mcp_server_status",
   McpServerStatusEnum.options,
+);
+export const mcpConnectionModeEnum = pgEnum(
+  "mcp_connection_mode",
+  McpConnectionModeEnum.options,
 );
 export const mcpServerErrorStatusEnum = pgEnum(
   "mcp_server_error_status",
@@ -65,6 +70,12 @@ export const mcpServersTable = pgTable(
     user_id: text("user_id").references(() => usersTable.id, {
       onDelete: "cascade",
     }),
+    connectionMode: mcpConnectionModeEnum("connection_mode")
+      .notNull()
+      .default(McpConnectionModeEnum.Enum.SESSION),
+    idleTimeoutMs: integer("idle_timeout_ms")
+      .notNull()
+      .default(30 * 60 * 1000),
   },
   (table) => [
     index("mcp_servers_type_idx").on(table.type),

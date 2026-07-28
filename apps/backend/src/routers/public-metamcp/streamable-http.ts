@@ -26,6 +26,7 @@ const SESSION_IDLE_TIMEOUT_MS = Number(
 );
 const sessionTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
 const sessionsBeingCleanedUp: Set<string> = new Set();
+const sessionInFlight: Map<string, number> = new Map();
 
 const clearSessionTimer = (sessionId: string) => {
   const timer = sessionTimers.get(sessionId);
@@ -36,13 +37,21 @@ const clearSessionTimer = (sessionId: string) => {
 };
 
 const scheduleSessionTimer = (sessionId: string) => {
-  if (!Number.isFinite(SESSION_IDLE_TIMEOUT_MS) || SESSION_IDLE_TIMEOUT_MS <= 0) {
+  if (
+    !Number.isFinite(SESSION_IDLE_TIMEOUT_MS) ||
+    SESSION_IDLE_TIMEOUT_MS <= 0 ||
+    (sessionInFlight.get(sessionId) || 0) > 0
+  ) {
     return;
   }
 
   clearSessionTimer(sessionId);
 
   const timer = setTimeout(() => {
+    if ((sessionInFlight.get(sessionId) || 0) > 0) {
+      scheduleSessionTimer(sessionId);
+      return;
+    }
     logger.info(
       `Public StreamableHTTP session ${sessionId} idle for ${SESSION_IDLE_TIMEOUT_MS}ms, cleaning up`,
     );
@@ -56,6 +65,47 @@ const scheduleSessionTimer = (sessionId: string) => {
 
   timer.unref?.();
   sessionTimers.set(sessionId, timer);
+};
+
+const beginSessionRequest = (sessionId: string) => {
+  clearSessionTimer(sessionId);
+  sessionInFlight.set(sessionId, (sessionInFlight.get(sessionId) || 0) + 1);
+};
+
+const endSessionRequest = (sessionId: string) => {
+  const next = Math.max(0, (sessionInFlight.get(sessionId) || 1) - 1);
+  if (next === 0) {
+    sessionInFlight.delete(sessionId);
+    scheduleSessionTimer(sessionId);
+  } else {
+    sessionInFlight.set(sessionId, next);
+  }
+};
+
+const handleSessionRequest = async (
+  sessionId: string,
+  res: express.Response,
+  action: () => Promise<void>,
+) => {
+  beginSessionRequest(sessionId);
+  let completed = false;
+  const complete = () => {
+    if (completed) return;
+    completed = true;
+    res.off("finish", complete);
+    res.off("close", complete);
+    endSessionRequest(sessionId);
+  };
+  res.once("finish", complete);
+  res.once("close", complete);
+
+  try {
+    await action();
+    if (res.writableEnded) complete();
+  } catch (error) {
+    complete();
+    throw error;
+  }
 };
 
 // Cleanup function for a specific session
@@ -97,6 +147,7 @@ const cleanupSession = async (
     logger.info(`Removed orphaned session ${sessionId} due to cleanup error`);
     throw error;
   } finally {
+    sessionInFlight.delete(sessionId);
     sessionsBeingCleanedUp.delete(sessionId);
   }
 };
@@ -105,6 +156,7 @@ const cleanupSession = async (
 streamableHttpRouter.get("/health/sessions", (req, res) => {
   const sessionIds = sessionManager.getSessionIds();
   const poolStatus = metaMcpServerPool.getPoolStatus();
+  const mcpPoolStatus = metaMcpServerPool.getMcpServerPoolStatus();
 
   res.json({
     timestamp: new Date().toISOString(),
@@ -113,7 +165,13 @@ streamableHttpRouter.get("/health/sessions", (req, res) => {
       sessionIds: sessionIds,
     },
     metaMcpPoolStatus: poolStatus,
-    totalActiveSessions: sessionIds.length + poolStatus.active,
+    mcpServerPoolStatus: mcpPoolStatus,
+    activeSessionRequests: Array.from(sessionInFlight.values()).reduce(
+      (total, count) => total + count,
+      0,
+    ),
+    totalActiveSessions: sessionIds.length,
+    totalMcpConnections: mcpPoolStatus.totalConnections,
   });
 });
 
@@ -142,8 +200,9 @@ streamableHttpRouter.get(
         return;
       } else {
         logger.info(`Found session ${sessionId}, handling request`);
-        scheduleSessionTimer(sessionId);
-        await transport.handleRequest(req, res);
+        await handleSessionRequest(sessionId, res, async () => {
+          await transport.handleRequest(req, res);
+        });
       }
     } catch (error) {
       logger.error("Error in public endpoint /mcp route:", error);
@@ -216,7 +275,6 @@ streamableHttpRouter.post(
 
         // Store transport reference
         sessionManager.addSession(newSessionId, transport);
-        scheduleSessionTimer(newSessionId);
 
         logger.info(
           `Public Endpoint Client <-> Proxy sessionId: ${newSessionId} for endpoint ${endpointName} -> namespace ${namespaceUuid}`,
@@ -231,7 +289,9 @@ streamableHttpRouter.post(
         await mcpServerInstance.server.connect(transport);
 
         // Now handle the request - server is guaranteed to be ready
-        await transport.handleRequest(req, res);
+        await handleSessionRequest(newSessionId, res, async () => {
+          await transport.handleRequest(req, res);
+        });
       } catch (error) {
         logger.error("Error in public endpoint /mcp POST route:", error);
 
@@ -269,8 +329,9 @@ streamableHttpRouter.post(
           });
         } else {
           logger.info(`Found session ${sessionId}, handling request`);
-          scheduleSessionTimer(sessionId);
-          await transport.handleRequest(req, res);
+          await handleSessionRequest(sessionId, res, async () => {
+            await transport.handleRequest(req, res);
+          });
         }
       } catch (error) {
         logger.error("Error in public endpoint /mcp route:", error);
@@ -345,6 +406,10 @@ streamableHttpRouter.delete(
 
 // Initialize automatic cleanup timer using session manager
 sessionManager.startCleanupTimer(async (sessionId, transport) => {
+  if ((sessionInFlight.get(sessionId) || 0) > 0) {
+    scheduleSessionTimer(sessionId);
+    return;
+  }
   await cleanupSession(sessionId, transport);
 });
 

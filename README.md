@@ -37,6 +37,7 @@ English | [中文](./README_cn.md)
 - [📖 Concepts](#-concepts)
   - [🖥️ **MCP Server**](#️-mcp-server)
     - [🔐 **Environment Variables \& Secrets (STDIO MCP Servers)**](#-environment-variables--secrets-stdio-mcp-servers)
+    - [🔄 **STDIO Connection Lifecycle**](#-stdio-connection-lifecycle)
   - [🏷️ **MetaMCP Namespace**](#️-metamcp-namespace)
   - [🌐 **MetaMCP Endpoint**](#-metamcp-endpoint)
   - [⚙️ **Middleware**](#️-middleware)
@@ -120,6 +121,15 @@ DATABASE_URL=${DB_CONNECTION_STRING}
 > **🔒 Security Note**: Environment variable references (`${VAR_NAME}`) are resolved from the MetaMCP container's environment at runtime. This keeps actual secret values out of your configuration and git repository.
 
 > **⚙️ Development Note**: For local development with `pnpm run dev:docker`, ensure your environment variables are listed in `turbo.json` under `globalEnv` to be passed to the development processes. This is not required for production Docker deployments.
+
+#### 🔄 **STDIO Connection Lifecycle**
+
+STDIO servers support two lifecycle modes:
+
+- `SESSION` starts an isolated MCP process for each client session and closes it when that session expires.
+- `PERSISTENT` reuses one stateful MCP process across short-lived client sessions. This is intended for browser automation and other servers that keep context in memory.
+
+Persistent processes have an independent idle timeout. They are closed only after the configured idle period, when no request is running, when the server configuration changes, or when MetaMCP shuts down. The public `/metamcp/health/sessions` endpoint reports outer sessions and real MCP connection counts.
 
 ### 🏷️ **MetaMCP Namespace**
 - Group one or more MCP servers into a namespace

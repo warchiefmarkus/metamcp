@@ -1,6 +1,10 @@
 import { z } from "zod";
 
-import { McpServerTypeEnum } from "./mcp-servers.zod";
+import {
+  DEFAULT_MCP_IDLE_TIMEOUT_MS,
+  McpConnectionModeEnum,
+  McpServerTypeEnum,
+} from "./mcp-servers.zod";
 import { OAuthTokensSchema } from "./oauth.zod";
 
 export const IOTypeSchema = z.enum(["overlapped", "pipe", "ignore", "inherit"]);
@@ -21,6 +25,14 @@ export const ServerParametersSchema = z.object({
   oauth_tokens: OAuthTokensSchema.nullable().optional(),
   bearerToken: z.string().nullable().optional(),
   headers: z.record(z.string()).nullable().optional(),
+  connectionMode: McpConnectionModeEnum.default(
+    McpConnectionModeEnum.Enum.SESSION,
+  ),
+  idleTimeoutMs: z
+    .number()
+    .int()
+    .min(60_000)
+    .default(DEFAULT_MCP_IDLE_TIMEOUT_MS),
 });
 
 export type ServerParameters = z.infer<typeof ServerParametersSchema>;

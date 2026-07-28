@@ -210,5 +210,11 @@
     "noToolsFromMcp": "No tools found on MCP server",
     "failedToFetchTools": "Failed to fetch tools from MCP server",
     "failedToSaveTools": "Failed to save tools"
-  }
+  },
+  "connectionMode": "Connection lifecycle",
+  "sessionConnection": "Per client session",
+  "persistentConnection": "Persistent shared process",
+  "connectionModeHelp": "Persistent mode keeps one stateful STDIO process across short-lived client sessions.",
+  "idleTimeoutMinutes": "Persistent idle timeout (minutes)",
+  "idleTimeoutHelp": "The process is closed only after this idle period and when no request is running."
 }

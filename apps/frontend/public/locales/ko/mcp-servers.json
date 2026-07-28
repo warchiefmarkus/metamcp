@@ -210,5 +210,11 @@
     "noToolsFromMcp": "MCP Server에서 Tool을 찾을 수 없습니다",
     "failedToFetchTools": "MCP Server에서 Tool 가져오기 실패",
     "failedToSaveTools": "Tool 저장 실패"
-  }
+  },
+  "connectionMode": "연결 수명 주기",
+  "sessionConnection": "클라이언트 세션별",
+  "persistentConnection": "지속 공유 프로세스",
+  "connectionModeHelp": "지속 모드는 짧게 유지되는 클라이언트 세션 간에 하나의 상태 저장 STDIO 프로세스를 재사용합니다.",
+  "idleTimeoutMinutes": "지속 연결 유휴 제한 시간(분)",
+  "idleTimeoutHelp": "실행 중인 요청이 없고 이 유휴 시간이 지난 경우에만 프로세스를 종료합니다."
 }

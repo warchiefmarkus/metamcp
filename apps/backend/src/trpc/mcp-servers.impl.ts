@@ -6,6 +6,8 @@ import {
   DeleteMcpServerResponseSchema,
   GetMcpServerResponseSchema,
   ListMcpServersResponseSchema,
+  DEFAULT_MCP_IDLE_TIMEOUT_MS,
+  McpConnectionModeEnum,
   McpServerTypeEnum,
   UpdateMcpServerRequestSchema,
   UpdateMcpServerResponseSchema,
@@ -38,6 +40,11 @@ export const mcpServersImplementations = {
       const createdServer = await mcpServersRepository.create({
         ...input,
         user_id: effectiveUserId,
+        connectionMode:
+          input.type === McpServerTypeEnum.Enum.STDIO
+            ? input.connectionMode
+            : McpConnectionModeEnum.Enum.SESSION,
+        idleTimeoutMs: input.idleTimeoutMs ?? DEFAULT_MCP_IDLE_TIMEOUT_MS,
       });
 
       if (!createdServer) {
@@ -135,6 +142,13 @@ export const mcpServersImplementations = {
             bearerToken: undefined,
             headers: serverConfig.headers || {},
             user_id: userId, // Default bulk imported servers to current user
+            connectionMode:
+              (serverConfig.type || "STDIO") === "STDIO"
+                ? serverConfig.connectionMode ||
+                  McpConnectionModeEnum.Enum.SESSION
+                : McpConnectionModeEnum.Enum.SESSION,
+            idleTimeoutMs:
+              serverConfig.idleTimeoutMs || DEFAULT_MCP_IDLE_TIMEOUT_MS,
           };
 
           serversToInsert.push(serverWithDefaults);
@@ -365,6 +379,11 @@ export const mcpServersImplementations = {
       const updatedServer = await mcpServersRepository.update({
         ...input,
         user_id: effectiveUserId,
+        connectionMode:
+          input.type === McpServerTypeEnum.Enum.STDIO
+            ? input.connectionMode
+            : McpConnectionModeEnum.Enum.SESSION,
+        idleTimeoutMs: input.idleTimeoutMs ?? DEFAULT_MCP_IDLE_TIMEOUT_MS,
       });
 
       if (!updatedServer) {

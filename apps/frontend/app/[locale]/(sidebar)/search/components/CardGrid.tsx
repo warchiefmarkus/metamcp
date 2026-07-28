@@ -2,6 +2,7 @@ import {
   CreateMcpServerRequest,
   CreateServerFormData,
   createServerFormSchema,
+  McpConnectionModeEnum,
   McpServerTypeEnum,
 } from "@repo/zod-types";
 import { Github, Plus } from "lucide-react";
@@ -212,6 +213,8 @@ function CreateServerDialog({
         url: data.url,
         bearerToken: data.bearerToken,
         user_id: data.user_id,
+        connectionMode: data.connectionMode,
+        idleTimeoutMs: data.idleTimeoutMinutes * 60 * 1000,
       };
 
       // Use tRPC mutation
@@ -531,6 +534,8 @@ export default function CardGrid({ items }: { items: SearchIndex }) {
       bearerToken: "",
       env: envString,
       user_id: undefined, // Default to private
+      connectionMode: McpConnectionModeEnum.Enum.SESSION,
+      idleTimeoutMinutes: 30,
     };
 
     setSelectedItem(defaultValues);

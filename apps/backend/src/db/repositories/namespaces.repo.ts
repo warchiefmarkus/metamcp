@@ -206,6 +206,8 @@ export class NamespacesRepository {
         error_status: mcpServersTable.error_status,
         created_at: mcpServersTable.created_at,
         user_id: mcpServersTable.user_id,
+        connectionMode: mcpServersTable.connectionMode,
+        idleTimeoutMs: mcpServersTable.idleTimeoutMs,
         status: namespaceServerMappingsTable.status,
       })
       .from(mcpServersTable)
@@ -230,6 +232,8 @@ export class NamespacesRepository {
       error_status: server.error_status,
       created_at: server.created_at,
       user_id: server.user_id,
+      connectionMode: server.connectionMode,
+      idleTimeoutMs: server.idleTimeoutMs,
       status: server.status,
     }));
 

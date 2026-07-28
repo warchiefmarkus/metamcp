@@ -16,6 +16,8 @@ export class McpServersSerializer {
       bearerToken: dbServer.bearerToken,
       headers: dbServer.headers,
       user_id: dbServer.user_id,
+      connectionMode: dbServer.connectionMode,
+      idleTimeoutMs: dbServer.idleTimeoutMs,
     };
   }
 

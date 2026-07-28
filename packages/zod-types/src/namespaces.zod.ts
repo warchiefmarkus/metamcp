@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import {
+  McpConnectionModeEnum,
   McpServerErrorStatusEnum,
   McpServerSchema,
   McpServerStatusEnum,
@@ -304,6 +305,9 @@ export const DatabaseNamespaceServerSchema = z.object({
   headers: z.record(z.string()),
   created_at: z.date(),
   user_id: z.string().nullable(),
+  connectionMode: McpConnectionModeEnum,
+  idleTimeoutMs: z.number().int(),
+  error_status: McpServerErrorStatusEnum.optional(),
   status: McpServerStatusEnum,
 });
 

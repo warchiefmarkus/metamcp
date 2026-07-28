@@ -50,7 +50,9 @@ export class MetaMcpServerPool {
       (process.env.METAMCP_DISABLE_IDLE_PREWARM || "").trim().toLowerCase(),
     );
     if (this.disableIdleServers) {
-      logger.info("MetaMCP idle server pool disabled via METAMCP_DISABLE_IDLE_PREWARM=true");
+      logger.info(
+        "MetaMCP idle server pool disabled via METAMCP_DISABLE_IDLE_PREWARM=true",
+      );
     }
     this.startCleanupTimer();
   }
@@ -75,6 +77,7 @@ export class MetaMcpServerPool {
   ): Promise<MetaMcpServerInstance | undefined> {
     // Check if we already have an active server for this sessionId
     if (this.activeServers[sessionId]) {
+      this.sessionTimestamps[sessionId] = Date.now();
       return this.activeServers[sessionId];
     }
 
@@ -273,8 +276,7 @@ export class MetaMcpServerPool {
     // Cleanup the MetaMCP server
     await activeServer.cleanup();
 
-    // Also cleanup the corresponding MCP server pool session
-    await mcpServerPool.cleanupSession(sessionId);
+    // activeServer.cleanup() owns the corresponding MCP pool cleanup.
 
     // Remove from active servers
     delete this.activeServers[sessionId];

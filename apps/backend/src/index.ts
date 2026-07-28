@@ -1,6 +1,8 @@
 import express from "express";
 
 import { auth } from "./auth";
+import { pool } from "./db";
+import { metaMcpServerPool } from "./lib/metamcp";
 import { initializeIdleServers, initializeOnStartup } from "./lib/startup";
 import mcpProxyRouter from "./routers/mcp-proxy";
 import oauthRouter from "./routers/oauth";
@@ -9,6 +11,8 @@ import trpcRouter from "./routers/trpc";
 import logger from "./utils/logger";
 
 const app = express();
+let httpServer: ReturnType<typeof app.listen> | null = null;
+let shuttingDown = false;
 
 // Global JSON middleware for non-proxy routes
 app.use((req, res, next) => {
@@ -83,6 +87,35 @@ app.use("/mcp-proxy", mcpProxyRouter);
 // Mount tRPC routes
 app.use("/trpc", trpcRouter);
 
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info(`Received ${signal}; shutting down MetaMCP backend`);
+
+  const forceExit = setTimeout(() => {
+    logger.error("Graceful shutdown timed out; forcing exit");
+    process.exit(1);
+  }, 20_000);
+  forceExit.unref();
+
+  try {
+    if (httpServer) {
+      await new Promise<void>((resolve) => httpServer!.close(() => resolve()));
+      httpServer = null;
+    }
+    await metaMcpServerPool.cleanupAll();
+    await pool.end();
+    clearTimeout(forceExit);
+    process.exit(0);
+  } catch (error) {
+    logger.error("Graceful shutdown failed:", error);
+    process.exit(1);
+  }
+}
+
+process.once("SIGINT", () => void shutdown("SIGINT"));
+process.once("SIGTERM", () => void shutdown("SIGTERM"));
+
 async function start(): Promise<void> {
   // Startup initialization (must run after DB is reachable/migrations are applied, and before listening)
   await initializeOnStartup();
@@ -90,16 +123,16 @@ async function start(): Promise<void> {
   const host = process.env.BACKEND_HOST ?? "127.0.0.1";
   const port = Number.parseInt(process.env.BACKEND_PORT ?? "12009", 10);
 
-  app.listen(port, host, async () => {
+  httpServer = app.listen(port, host, async () => {
     console.log(`Server is running at http://${host}:${port}`);
-    console.log(`Auth routes available at: http://localhost:12009/api/auth`);
+    console.log(`Auth routes available at: http://${host}:${port}/api/auth`);
     console.log(
-      `Public MetaMCP endpoints available at: http://localhost:12009/metamcp`,
+      `Public MetaMCP endpoints available at: http://${host}:${port}/metamcp`,
     );
     console.log(
-      `MCP Proxy routes available at: http://localhost:12009/mcp-proxy`,
+      `MCP Proxy routes available at: http://${host}:${port}/mcp-proxy`,
     );
-    console.log(`tRPC routes available at: http://localhost:12009/trpc`);
+    console.log(`tRPC routes available at: http://${host}:${port}/trpc`);
 
     // Wait a moment for the server to be fully ready to handle incoming connections,
     // then initialize idle servers (prevents connection errors when MCP servers connect back)
