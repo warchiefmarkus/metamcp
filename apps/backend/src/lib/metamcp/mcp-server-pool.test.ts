@@ -224,6 +224,33 @@ describe("McpServerPool persistent lifecycle", () => {
     await pool.cleanupAll();
   });
 
+  it("reports in-flight usage for a session-scoped client", async () => {
+    const client = createClient();
+    mocks.connect.mockResolvedValue(client);
+    const pool = await loadPool();
+    const connected = await pool.getSession(
+      "session-a",
+      "playwright-uuid",
+      sessionParams(),
+    );
+
+    let finishRequest!: () => void;
+    const request = pool.withClientUsage(
+      "playwright-uuid",
+      connected!,
+      () =>
+        new Promise<void>((resolve) => {
+          finishRequest = resolve;
+        }),
+    );
+
+    expect(pool.getConnectionDetails()[0].inFlight).toBe(1);
+    finishRequest();
+    await request;
+    expect(pool.getConnectionDetails()[0].inFlight).toBe(0);
+    await pool.cleanupAll();
+  });
+
   it("invalidates a persistent client and creates a fresh one", async () => {
     const oldClient = createClient();
     const newClient = createClient();

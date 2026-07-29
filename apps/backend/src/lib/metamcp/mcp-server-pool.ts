@@ -66,6 +66,7 @@ export class McpServerPool {
     Promise<ConnectedClient | undefined>
   > = new Map();
   private serverConnectionVersions: Record<string, number> = {};
+  private clientInFlight = new WeakMap<ConnectedClient, number>();
   private lifecycleVersion = 0;
 
   // Session cleanup timer
@@ -286,17 +287,26 @@ export class McpServerPool {
     action: () => Promise<T>,
   ): Promise<T> {
     const persistent = this.persistentSessions[serverUuid];
-    if (!persistent || persistent.client !== client) {
-      return await action();
+    this.clientInFlight.set(client, (this.clientInFlight.get(client) || 0) + 1);
+    if (persistent?.client === client) {
+      persistent.inFlight += 1;
+      persistent.lastUsedAt = Date.now();
     }
 
-    persistent.inFlight += 1;
-    persistent.lastUsedAt = Date.now();
     try {
       return await action();
     } finally {
-      persistent.inFlight = Math.max(0, persistent.inFlight - 1);
-      persistent.lastUsedAt = Date.now();
+      const remaining = Math.max(0, (this.clientInFlight.get(client) || 1) - 1);
+      if (remaining === 0) {
+        this.clientInFlight.delete(client);
+      } else {
+        this.clientInFlight.set(client, remaining);
+      }
+
+      if (persistent?.client === client) {
+        persistent.inFlight = Math.max(0, persistent.inFlight - 1);
+        persistent.lastUsedAt = Date.now();
+      }
     }
   }
 
@@ -612,7 +622,7 @@ export class McpServerPool {
         kind,
         processId: client.getProcessId(),
         sessionIds: [...sessionIds].sort(),
-        inFlight,
+        inFlight: Math.max(inFlight, this.clientInFlight.get(client) || 0),
       };
     };
 

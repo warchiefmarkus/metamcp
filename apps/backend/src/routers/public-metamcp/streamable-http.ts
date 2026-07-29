@@ -164,6 +164,10 @@ streamableHttpRouter.get("/health/sessions", (req, res) => {
     streamableHttpSessions: {
       count: sessionIds.length,
       sessionIds: sessionIds,
+      sessions: sessionIds.map((sessionId) => ({
+        sessionId,
+        activeRequests: sessionInFlight.get(sessionId) || 0,
+      })),
     },
     metaMcpPoolStatus: poolStatus,
     mcpServerPoolStatus: mcpPoolStatus,
