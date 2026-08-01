@@ -13,6 +13,7 @@ import logger from "@/utils/logger";
 
 import { metaMcpServerPool } from "../../lib/metamcp/metamcp-server-pool";
 import { SessionLifetimeManagerImpl } from "../../lib/session-lifetime-manager";
+import { StreamableSessionActivityTracker } from "../../lib/streamable-session-activity";
 
 const streamableHttpRouter = express.Router();
 
@@ -24,77 +25,56 @@ const sessionManager =
 const SESSION_IDLE_TIMEOUT_MS = Number(
   process.env.METAMCP_SESSION_IDLE_TIMEOUT_MS || "60000",
 );
-const sessionTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
 const sessionsBeingCleanedUp: Set<string> = new Set();
-const sessionInFlight: Map<string, number> = new Map();
-
-const clearSessionTimer = (sessionId: string) => {
-  const timer = sessionTimers.get(sessionId);
-  if (timer) {
-    clearTimeout(timer);
-    sessionTimers.delete(sessionId);
-  }
-};
-
-const scheduleSessionTimer = (sessionId: string) => {
-  if (
-    !Number.isFinite(SESSION_IDLE_TIMEOUT_MS) ||
-    SESSION_IDLE_TIMEOUT_MS <= 0 ||
-    (sessionInFlight.get(sessionId) || 0) > 0
-  ) {
-    return;
-  }
-
-  clearSessionTimer(sessionId);
-
-  const timer = setTimeout(() => {
-    if ((sessionInFlight.get(sessionId) || 0) > 0) {
-      scheduleSessionTimer(sessionId);
-      return;
-    }
+const sessionActivity = new StreamableSessionActivityTracker({
+  idleTimeoutMs: SESSION_IDLE_TIMEOUT_MS,
+  cleanup: async (sessionId) => {
     logger.info(
       `Public StreamableHTTP session ${sessionId} idle for ${SESSION_IDLE_TIMEOUT_MS}ms, cleaning up`,
     );
-    cleanupSession(sessionId).catch((error) => {
-      logger.error(
-        `Error during idle cleanup of public StreamableHTTP session ${sessionId}:`,
-        error,
-      );
-    });
-  }, SESSION_IDLE_TIMEOUT_MS);
+    await cleanupSession(sessionId);
+  },
+  onCleanupError: (sessionId, error) => {
+    logger.error(
+      `Error during idle cleanup of public StreamableHTTP session ${sessionId}:`,
+      error,
+    );
+  },
+});
 
-  timer.unref?.();
-  sessionTimers.set(sessionId, timer);
-};
-
-const beginSessionRequest = (sessionId: string) => {
-  clearSessionTimer(sessionId);
-  sessionInFlight.set(sessionId, (sessionInFlight.get(sessionId) || 0) + 1);
-};
-
-const endSessionRequest = (sessionId: string) => {
-  const next = Math.max(0, (sessionInFlight.get(sessionId) || 1) - 1);
-  if (next === 0) {
-    sessionInFlight.delete(sessionId);
-    scheduleSessionTimer(sessionId);
-  } else {
-    sessionInFlight.set(sessionId, next);
-  }
-};
-
-const handleSessionRequest = async (
+const handleSessionOperation = async (
   sessionId: string,
   res: express.Response,
   action: () => Promise<void>,
 ) => {
-  beginSessionRequest(sessionId);
-  let completed = false;
+  const completeOperation = sessionActivity.beginOperation(sessionId);
   const complete = () => {
-    if (completed) return;
-    completed = true;
     res.off("finish", complete);
     res.off("close", complete);
-    endSessionRequest(sessionId);
+    completeOperation();
+  };
+  res.once("finish", complete);
+  res.once("close", complete);
+
+  try {
+    await action();
+    if (res.writableEnded) complete();
+  } catch (error) {
+    complete();
+    throw error;
+  }
+};
+
+const handleSessionEventStream = async (
+  sessionId: string,
+  res: express.Response,
+  action: () => Promise<void>,
+) => {
+  const closeEventStream = sessionActivity.beginEventStream(sessionId);
+  const complete = () => {
+    res.off("finish", complete);
+    res.off("close", complete);
+    closeEventStream();
   };
   res.once("finish", complete);
   res.once("close", complete);
@@ -118,7 +98,6 @@ const cleanupSession = async (
   }
 
   sessionsBeingCleanedUp.add(sessionId);
-  clearSessionTimer(sessionId);
   logger.info(`Cleaning up StreamableHTTP session ${sessionId}`);
 
   try {
@@ -147,7 +126,7 @@ const cleanupSession = async (
     logger.info(`Removed orphaned session ${sessionId} due to cleanup error`);
     throw error;
   } finally {
-    sessionInFlight.delete(sessionId);
+    sessionActivity.removeSession(sessionId);
     sessionsBeingCleanedUp.delete(sessionId);
   }
 };
@@ -164,18 +143,26 @@ streamableHttpRouter.get("/health/sessions", (req, res) => {
     streamableHttpSessions: {
       count: sessionIds.length,
       sessionIds: sessionIds,
-      sessions: sessionIds.map((sessionId) => ({
-        sessionId,
-        activeRequests: sessionInFlight.get(sessionId) || 0,
-      })),
+      sessions: sessionIds.map((sessionId) => {
+        const activity = sessionActivity.getSnapshot(sessionId);
+        return {
+          sessionId,
+          // Backward-compatible alias used by older Windows Host builds.
+          activeRequests: activity.inFlightOperations,
+          inFlightOperations: activity.inFlightOperations,
+          openEventStreams: activity.openEventStreams,
+          lastActivityAt: new Date(activity.lastActivityAt).toISOString(),
+          idleMs: activity.idleMs,
+        };
+      }),
     },
     metaMcpPoolStatus: poolStatus,
     mcpServerPoolStatus: mcpPoolStatus,
     mcpConnections,
-    activeSessionRequests: Array.from(sessionInFlight.values()).reduce(
-      (total, count) => total + count,
-      0,
-    ),
+    // Backward-compatible alias: this now counts meaningful POST operations only.
+    activeSessionRequests: sessionActivity.getTotalInFlightOperations(),
+    inFlightOperations: sessionActivity.getTotalInFlightOperations(),
+    openEventStreams: sessionActivity.getTotalOpenEventStreams(),
     totalActiveSessions: sessionIds.length,
     totalMcpConnections: mcpPoolStatus.totalConnections,
   });
@@ -206,7 +193,7 @@ streamableHttpRouter.get(
         return;
       } else {
         logger.info(`Found session ${sessionId}, handling request`);
-        await handleSessionRequest(sessionId, res, async () => {
+        await handleSessionEventStream(sessionId, res, async () => {
           await transport.handleRequest(req, res);
         });
       }
@@ -281,6 +268,7 @@ streamableHttpRouter.post(
 
         // Store transport reference
         sessionManager.addSession(newSessionId, transport);
+        sessionActivity.registerSession(newSessionId);
 
         logger.info(
           `Public Endpoint Client <-> Proxy sessionId: ${newSessionId} for endpoint ${endpointName} -> namespace ${namespaceUuid}`,
@@ -295,7 +283,7 @@ streamableHttpRouter.post(
         await mcpServerInstance.server.connect(transport);
 
         // Now handle the request - server is guaranteed to be ready
-        await handleSessionRequest(newSessionId, res, async () => {
+        await handleSessionOperation(newSessionId, res, async () => {
           await transport.handleRequest(req, res);
         });
       } catch (error) {
@@ -335,7 +323,7 @@ streamableHttpRouter.post(
           });
         } else {
           logger.info(`Found session ${sessionId}, handling request`);
-          await handleSessionRequest(sessionId, res, async () => {
+          await handleSessionOperation(sessionId, res, async () => {
             await transport.handleRequest(req, res);
           });
         }
@@ -412,8 +400,8 @@ streamableHttpRouter.delete(
 
 // Initialize automatic cleanup timer using session manager
 sessionManager.startCleanupTimer(async (sessionId, transport) => {
-  if ((sessionInFlight.get(sessionId) || 0) > 0) {
-    scheduleSessionTimer(sessionId);
+  if (sessionActivity.getInFlightOperations(sessionId) > 0) {
+    sessionActivity.scheduleIdleCleanup(sessionId);
     return;
   }
   await cleanupSession(sessionId, transport);
