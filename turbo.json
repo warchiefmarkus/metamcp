@@ -35,7 +35,8 @@
     "BOOTSTRAP_ENDPOINTS",
     "BOOTSTRAP_DEBUG",
     "BOOTSTRAP_ENABLE",
-    "BOOTSTRAP_FAIL_HARD"
+    "BOOTSTRAP_FAIL_HARD",
+    "METAMCP_HOST_CONTROL_TOKEN"
   ],
   "tasks": {
     "build": {

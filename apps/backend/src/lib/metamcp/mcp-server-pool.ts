@@ -29,6 +29,14 @@ export interface McpConnectionDetails {
   inFlight: number;
 }
 
+export interface McpConnectionResetResult {
+  requestedConnections: number;
+  closedConnections: number;
+  failedConnections: number;
+  timedOutConnections: number;
+  durationMs: number;
+}
+
 interface PersistentClientEntry {
   client: ConnectedClient;
   lastUsedAt: number;
@@ -392,7 +400,12 @@ export class McpServerPool {
       return;
     }
 
+    const lifecycleVersion = this.lifecycleVersion;
     const newClient = await this.createNewConnection(params, namespaceUuid);
+    if (newClient && this.lifecycleVersion !== lifecycleVersion) {
+      await newClient.cleanup();
+      return;
+    }
     if (newClient) {
       this.idleSessions[serverUuid] = newClient;
       logger.info(`Created idle session for server ${serverUuid}`);
@@ -424,10 +437,15 @@ export class McpServerPool {
 
     // Mark that we're creating an idle session for this server
     this.creatingIdleSessions.add(serverUuid);
+    const lifecycleVersion = this.lifecycleVersion;
 
     // Create the session in the background (fire and forget)
     this.createNewConnection(params, namespaceUuid)
-      .then((newClient) => {
+      .then(async (newClient) => {
+        if (newClient && this.lifecycleVersion !== lifecycleVersion) {
+          await newClient.cleanup();
+          return;
+        }
         if (newClient && !this.idleSessions[serverUuid]) {
           this.idleSessions[serverUuid] = newClient;
           logger.info(
@@ -528,6 +546,81 @@ export class McpServerPool {
   }
 
   /**
+   * Close every downstream MCP connection while keeping the backend and
+   * outer Streamable HTTP sessions alive. New tool calls recreate clients.
+   */
+  async resetConnections(
+    cleanupTimeoutMs: number = 8_000,
+  ): Promise<McpConnectionResetResult> {
+    const startedAt = Date.now();
+    this.lifecycleVersion += 1;
+
+    const clients = new Set<ConnectedClient>();
+    Object.values(this.idleSessions).forEach((client) => clients.add(client));
+    Object.values(this.persistentSessions).forEach((entry) =>
+      clients.add(entry.client),
+    );
+    Object.values(this.activeSessions).forEach((session) =>
+      Object.values(session).forEach((client) => clients.add(client)),
+    );
+
+    this.idleSessions = {};
+    this.activeSessions = {};
+    this.persistentSessions = {};
+    this.sessionToServers = {};
+    this.sessionTimestamps = {};
+    this.sessionConnectionVersions = {};
+    this.serverParamsCache = {};
+    this.creatingIdleSessions.clear();
+    this.connectingPersistentSessions.clear();
+    this.serverConnectionVersions = {};
+    this.clientInFlight = new WeakMap<ConnectedClient, number>();
+    this.backgroundIdleSessionsByNamespace.clear();
+
+    const closeClient = async (
+      client: ConnectedClient,
+    ): Promise<"closed" | "failed" | "timedOut"> => {
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        return await Promise.race([
+          client
+            .cleanup()
+            .then(() => "closed" as const)
+            .catch((error) => {
+              logger.warn(
+                "Failed to close MCP connection during reset:",
+                error,
+              );
+              return "failed" as const;
+            }),
+          new Promise<"timedOut">((resolve) => {
+            timer = setTimeout(() => resolve("timedOut"), cleanupTimeoutMs);
+            timer.unref?.();
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    };
+
+    const outcomes = await Promise.all(
+      Array.from(clients).map((client) => closeClient(client)),
+    );
+    this.startCleanupTimer();
+
+    const result: McpConnectionResetResult = {
+      requestedConnections: clients.size,
+      closedConnections: outcomes.filter((value) => value === "closed").length,
+      failedConnections: outcomes.filter((value) => value === "failed").length,
+      timedOutConnections: outcomes.filter((value) => value === "timedOut")
+        .length,
+      durationMs: Date.now() - startedAt,
+    };
+    logger.warn("Reset all downstream MCP connections", result);
+    return result;
+  }
+
+  /**
    * Cleanup all sessions
    */
   async cleanupAll(): Promise<void> {
@@ -555,6 +648,8 @@ export class McpServerPool {
     this.creatingIdleSessions.clear();
     this.connectingPersistentSessions.clear();
     this.serverConnectionVersions = {};
+    this.clientInFlight = new WeakMap<ConnectedClient, number>();
+    this.backgroundIdleSessionsByNamespace.clear();
 
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
@@ -928,6 +1023,9 @@ export class McpServerPool {
    * Start the automatic cleanup timer for expired sessions
    */
   private startCleanupTimer(): void {
+    if (this.cleanupTimer) {
+      return;
+    }
     this.cleanupTimer = setInterval(async () => {
       await Promise.allSettled([
         this.cleanupExpiredSessions(),

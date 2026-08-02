@@ -331,6 +331,10 @@ export class MetaMcpServerPool {
     logger.info("Cleaned up all MetaMCP server pool sessions");
   }
 
+  async resetMcpServerConnections() {
+    return await mcpServerPool.resetConnections();
+  }
+
   /**
    * Get pool status for monitoring
    */

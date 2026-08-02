@@ -4,6 +4,7 @@ import { auth } from "./auth";
 import { pool } from "./db";
 import { metaMcpServerPool } from "./lib/metamcp";
 import { initializeIdleServers, initializeOnStartup } from "./lib/startup";
+import hostControlRouter from "./routers/host-control";
 import mcpProxyRouter from "./routers/mcp-proxy";
 import oauthRouter from "./routers/oauth";
 import publicEndpointsRouter from "./routers/public-metamcp";
@@ -77,6 +78,9 @@ app.use(async (req, res, next) => {
   }
   next();
 });
+
+// Local-only, token-protected control routes for the Windows/Linux Host.
+app.use("/host-control", hostControlRouter);
 
 // Mount public endpoints routes (must be before JSON middleware to handle raw streams)
 app.use("/metamcp", publicEndpointsRouter);

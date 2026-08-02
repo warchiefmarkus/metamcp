@@ -301,4 +301,58 @@ describe("McpServerPool persistent lifecycle", () => {
     expect(pool.getPoolStatus().persistent).toBe(0);
     await pool.cleanupAll();
   });
+  it("resets downstream clients without disabling future connections", async () => {
+    const oldClient = createClient(1111);
+    const newClient = createClient(2222);
+    mocks.connect
+      .mockResolvedValueOnce(oldClient)
+      .mockResolvedValueOnce(newClient);
+    const pool = await loadPool();
+
+    await pool.getSession("session-a", "playwright-uuid", sessionParams());
+    const result = await pool.resetConnections();
+
+    expect(result).toMatchObject({
+      requestedConnections: 1,
+      closedConnections: 1,
+      failedConnections: 0,
+      timedOutConnections: 0,
+    });
+    expect(oldClient.cleanup).toHaveBeenCalledTimes(1);
+    expect(pool.getPoolStatus().totalConnections).toBe(0);
+
+    const recreated = await pool.getSession(
+      "session-a",
+      "playwright-uuid",
+      sessionParams(),
+    );
+    expect(recreated).toBe(newClient);
+    expect(pool.getPoolStatus().totalConnections).toBe(1);
+    await pool.cleanupAll();
+  });
+
+  it("closes a connection that finishes after reset", async () => {
+    const client = createClient();
+    let resolveConnect!: (value: typeof client) => void;
+    mocks.connect.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveConnect = resolve;
+        }),
+    );
+    const pool = await loadPool();
+
+    const connecting = pool.getSession(
+      "session-a",
+      "playwright-uuid",
+      sessionParams(),
+    );
+    await pool.resetConnections();
+    resolveConnect(client);
+
+    expect(await connecting).toBeUndefined();
+    expect(client.cleanup).toHaveBeenCalledTimes(1);
+    expect(pool.getPoolStatus().totalConnections).toBe(0);
+    await pool.cleanupAll();
+  });
 });
