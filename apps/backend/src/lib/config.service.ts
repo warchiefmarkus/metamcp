@@ -117,6 +117,31 @@ export const configService = {
     return isNaN(lifetime) ? null : lifetime;
   },
 
+  async getExternalTunnelBaseUrl(): Promise<string> {
+    const config = await configRepo.getConfig(
+      ConfigKeyEnum.Enum.EXTERNAL_TUNNEL_BASE_URL,
+    );
+    return (
+      config?.value?.trim().replace(/\/+$/, "") ||
+      process.env.EXTERNAL_TUNNEL_BASE_URL?.trim().replace(/\/+$/, "") ||
+      "https://luckylion.run.place"
+    );
+  },
+
+  async setExternalTunnelBaseUrl(baseUrl: string): Promise<void> {
+    const normalized = baseUrl.trim().replace(/\/+$/, "");
+    const parsed = new URL(normalized);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("External tunnel base URL must use http or https");
+    }
+
+    await configRepo.setConfig(
+      ConfigKeyEnum.Enum.EXTERNAL_TUNNEL_BASE_URL,
+      normalized,
+      "External tunnel base URL used to generate public endpoint URLs",
+    );
+  },
+
   async setSessionLifetime(lifetime?: number | null): Promise<void> {
     if (lifetime === null || lifetime === undefined) {
       // Remove the config to indicate infinite session lifetime

@@ -116,6 +116,7 @@
     "shttpUrlCopied": "Streamable HTTP URL이 클립보드에 복사되었습니다",
     "openApiUrlCopied": "OpenAPI URL이 클립보드에 복사되었습니다",
     "openApiSchemaUrlCopied": "OpenAPI 스키마 URL이 클립보드에 복사되었습니다",
+    "externalUrlCopied": "외부 터널 URL이 클립보드에 복사되었습니다",
     "sseUrlWithApiKeyCopied": "API Key가 포함된 SSE URL이 클립보드에 복사되었습니다",
     "shttpUrlWithApiKeyCopied": "API Key가 포함된 SHTTP URL이 클립보드에 복사되었습니다",
     "openApiUrlWithApiKeyCopied": "API Key가 포함된 OpenAPI URL이 클립보드에 복사되었습니다",

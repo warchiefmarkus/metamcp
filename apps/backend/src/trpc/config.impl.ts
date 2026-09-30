@@ -80,6 +80,17 @@ export const configImplementations = {
     return { success: true };
   },
 
+  getExternalTunnelBaseUrl: async (): Promise<string> => {
+    return await configService.getExternalTunnelBaseUrl();
+  },
+
+  setExternalTunnelBaseUrl: async (input: {
+    baseUrl: string;
+  }): Promise<{ success: boolean }> => {
+    await configService.setExternalTunnelBaseUrl(input.baseUrl);
+    return { success: true };
+  },
+
   getSessionLifetime: async (): Promise<number | null> => {
     return await configService.getSessionLifetime();
   },

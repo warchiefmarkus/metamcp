@@ -81,6 +81,8 @@ export function EndpointsList({ onRefresh }: EndpointsListProps) {
 
   // Fetch user's API keys to use in URLs
   const { data: apiKeysResponse } = trpc.frontend.apiKeys.list.useQuery();
+  const { data: externalTunnelBaseUrl } =
+    trpc.frontend.config.getExternalTunnelBaseUrl.useQuery();
 
   // Delete mutation
   const deleteEndpointMutation = trpc.frontend.endpoints.delete.useMutation({
@@ -148,6 +150,22 @@ export function EndpointsList({ onRefresh }: EndpointsListProps) {
       },
       cell: ({ row }) => {
         const endpoint = row.original;
+        const endpointIsPublic = endpoint.user_id === null;
+        const activeApiKey = (apiKeysResponse?.apiKeys || []).find(
+          (key) =>
+            key.is_active &&
+            (endpointIsPublic ? key.user_id === null : key.user_id !== null),
+        );
+        const apiKeyPlaceholder = endpointIsPublic
+          ? "YOUR_PUBLIC_API_KEY"
+          : "YOUR_PRIVATE_API_KEY";
+        const tunnelBase = (
+          externalTunnelBaseUrl || "https://luckylion.run.place"
+        ).replace(/\/+$/, "");
+        const externalUrl = `${tunnelBase}/metamcp/${endpoint.name}/mcp?api_key=${encodeURIComponent(
+          activeApiKey?.key || apiKeyPlaceholder,
+        )}`;
+
         return (
           <div className="space-y-1 px-3 py-2">
             <div className="font-medium">{endpoint.name}</div>
@@ -215,6 +233,20 @@ export function EndpointsList({ onRefresh }: EndpointsListProps) {
                     const url = `${getAppUrl()}/metamcp/${endpoint.name}/api/openapi.json`;
                     navigator.clipboard.writeText(url);
                     toast.success(t("endpoints:list.openApiSchemaUrlCopied"));
+                  }}
+                >
+                  <Copy className="h-2 w-2" />
+                </Button>
+              </div>
+              <div className="flex items-center gap-2">
+                <span>External: {externalUrl}</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-2 w-2 p-0 hover:bg-muted"
+                  onClick={() => {
+                    navigator.clipboard.writeText(externalUrl);
+                    toast.success(t("endpoints:list.externalUrlCopied"));
                   }}
                 >
                   <Copy className="h-2 w-2" />

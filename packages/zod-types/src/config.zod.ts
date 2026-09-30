@@ -10,6 +10,7 @@ export const ConfigKeyEnum = z.enum([
   "MCP_MAX_TOTAL_TIMEOUT",
   "MCP_MAX_ATTEMPTS",
   "SESSION_LIFETIME",
+  "EXTERNAL_TUNNEL_BASE_URL",
 ]);
 
 // Config schema

@@ -28,6 +28,8 @@ export default function SettingsPage() {
   const [mcpResetTimeoutOnProgress, setMcpResetTimeoutOnProgress] =
     useState(true);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [externalTunnelBaseUrl, setExternalTunnelBaseUrl] = useState("");
+  const [externalTunnelDirty, setExternalTunnelDirty] = useState(false);
   const [isSessionLifetimeEnabled, setIsSessionLifetimeEnabled] =
     useState(false);
 
@@ -96,6 +98,12 @@ export default function SettingsPage() {
     isLoading: sessionLifetimeLoading,
     refetch: refetchSessionLifetime,
   } = trpc.frontend.config.getSessionLifetime.useQuery();
+
+  const {
+    data: externalTunnelBaseUrlData,
+    isLoading: externalTunnelLoading,
+    refetch: refetchExternalTunnel,
+  } = trpc.frontend.config.getExternalTunnelBaseUrl.useQuery();
 
   // Mutations
   const setSignupDisabledMutation =
@@ -177,6 +185,16 @@ export default function SettingsPage() {
       },
     });
 
+  const setExternalTunnelBaseUrlMutation =
+    trpc.frontend.config.setExternalTunnelBaseUrl.useMutation({
+      onSuccess: (data) => {
+        if (data.success) {
+          refetchExternalTunnel();
+          setExternalTunnelDirty(false);
+        }
+      },
+    });
+
   const setSessionLifetimeMutation =
     trpc.frontend.config.setSessionLifetime.useMutation({
       onSuccess: (data) => {
@@ -231,6 +249,12 @@ export default function SettingsPage() {
       form.setValue("mcpMaxAttempts", mcpMaxAttemptsData);
     }
   }, [mcpMaxAttemptsData, form]);
+
+  useEffect(() => {
+    if (externalTunnelBaseUrlData !== undefined && !externalTunnelDirty) {
+      setExternalTunnelBaseUrl(externalTunnelBaseUrlData);
+    }
+  }, [externalTunnelBaseUrlData, externalTunnelDirty]);
 
   useEffect(() => {
     if (sessionLifetimeData !== undefined) {
@@ -360,6 +384,21 @@ export default function SettingsPage() {
     }
   };
 
+  const saveExternalTunnelBaseUrl = async () => {
+    try {
+      const normalized = externalTunnelBaseUrl.trim().replace(/\/+$/, "");
+      await setExternalTunnelBaseUrlMutation.mutateAsync({
+        baseUrl: normalized,
+      });
+      setExternalTunnelBaseUrl(normalized);
+      toast.success(t("settings:externalTunnelSaved"));
+    } catch (error) {
+      toast.error(t("settings:externalTunnelSaveError"), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   // Handle form submission
   const onSubmit = async (data: SettingsFormData) => {
     try {
@@ -401,7 +440,8 @@ export default function SettingsPage() {
     mcpTimeoutLoading ||
     mcpMaxTotalLoading ||
     mcpMaxAttemptsLoading ||
-    sessionLifetimeLoading;
+    sessionLifetimeLoading ||
+    externalTunnelLoading;
 
   if (isLoading) {
     return (
@@ -485,6 +525,48 @@ export default function SettingsPage() {
                 disabled={setBasicAuthDisabledMutation.isPending}
               />
             </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>{t("settings:externalTunnel")}</CardTitle>
+            <CardDescription>
+              {t("settings:externalTunnelDescription")}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Label htmlFor="external-tunnel-base-url">
+              {t("settings:externalTunnelBaseUrl")}
+            </Label>
+            <div className="flex max-w-3xl items-center gap-2">
+              <Input
+                id="external-tunnel-base-url"
+                type="url"
+                value={externalTunnelBaseUrl}
+                placeholder="https://luckylion.run.place"
+                onChange={(event) => {
+                  setExternalTunnelBaseUrl(event.target.value);
+                  setExternalTunnelDirty(true);
+                }}
+              />
+              <Button
+                type="button"
+                onClick={saveExternalTunnelBaseUrl}
+                disabled={
+                  !externalTunnelDirty ||
+                  !externalTunnelBaseUrl.trim() ||
+                  setExternalTunnelBaseUrlMutation.isPending
+                }
+              >
+                {setExternalTunnelBaseUrlMutation.isPending
+                  ? t("settings:loading")
+                  : t("settings:save")}
+              </Button>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              {t("settings:externalTunnelBaseUrlHelp")}
+            </p>
           </CardContent>
         </Card>
 

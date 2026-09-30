@@ -30,6 +30,10 @@ export const createConfigRouter = (implementations: {
   setMcpMaxAttempts: (input: {
     maxAttempts: number;
   }) => Promise<{ success: boolean }>;
+  getExternalTunnelBaseUrl: () => Promise<string>;
+  setExternalTunnelBaseUrl: (input: {
+    baseUrl: string;
+  }) => Promise<{ success: boolean }>;
   getSessionLifetime: () => Promise<number | null>;
   setSessionLifetime: (input: {
     lifetime?: number | null;
@@ -111,6 +115,28 @@ export const createConfigRouter = (implementations: {
       .input(z.object({ maxAttempts: z.number().min(1).max(10) }))
       .mutation(async ({ input }) => {
         return await implementations.setMcpMaxAttempts(input);
+      }),
+
+    getExternalTunnelBaseUrl: protectedProcedure.query(async () => {
+      return await implementations.getExternalTunnelBaseUrl();
+    }),
+
+    setExternalTunnelBaseUrl: protectedProcedure
+      .input(
+        z.object({
+          baseUrl: z
+            .string()
+            .trim()
+            .url()
+            .refine(
+              (value) =>
+                value.startsWith("http://") || value.startsWith("https://"),
+              "External tunnel base URL must use http or https",
+            ),
+        }),
+      )
+      .mutation(async ({ input }) => {
+        return await implementations.setExternalTunnelBaseUrl(input);
       }),
 
     getSessionLifetime: publicProcedure.query(async () => {
