@@ -1,6 +1,7 @@
 import { ConfigKey, ConfigKeyEnum } from "@repo/zod-types";
 
 import { configRepo } from "../db/repositories/config.repo";
+import { buildPublicEndpointBaseUrl } from "./public-endpoint-base-url";
 
 export const configService = {
   async isSignupDisabled(): Promise<boolean> {
@@ -125,6 +126,13 @@ export const configService = {
       config?.value?.trim().replace(/\/+$/, "") ||
       process.env.EXTERNAL_TUNNEL_BASE_URL?.trim().replace(/\/+$/, "") ||
       "https://luckylion.run.place"
+    );
+  },
+
+  async getPublicEndpointBaseUrl(): Promise<string> {
+    return buildPublicEndpointBaseUrl(
+      await this.getExternalTunnelBaseUrl(),
+      process.env.METAMCP_PUBLIC_PATH,
     );
   },
 

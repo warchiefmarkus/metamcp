@@ -31,6 +31,7 @@ export const createConfigRouter = (implementations: {
     maxAttempts: number;
   }) => Promise<{ success: boolean }>;
   getExternalTunnelBaseUrl: () => Promise<string>;
+  getPublicEndpointBaseUrl: () => Promise<string>;
   setExternalTunnelBaseUrl: (input: {
     baseUrl: string;
   }) => Promise<{ success: boolean }>;
@@ -119,6 +120,10 @@ export const createConfigRouter = (implementations: {
 
     getExternalTunnelBaseUrl: protectedProcedure.query(async () => {
       return await implementations.getExternalTunnelBaseUrl();
+    }),
+
+    getPublicEndpointBaseUrl: protectedProcedure.query(async () => {
+      return await implementations.getPublicEndpointBaseUrl();
     }),
 
     setExternalTunnelBaseUrl: protectedProcedure

@@ -81,8 +81,8 @@ export function EndpointsList({ onRefresh }: EndpointsListProps) {
 
   // Fetch user's API keys to use in URLs
   const { data: apiKeysResponse } = trpc.frontend.apiKeys.list.useQuery();
-  const { data: externalTunnelBaseUrl } =
-    trpc.frontend.config.getExternalTunnelBaseUrl.useQuery();
+  const { data: publicEndpointBaseUrl } =
+    trpc.frontend.config.getPublicEndpointBaseUrl.useQuery();
 
   // Delete mutation
   const deleteEndpointMutation = trpc.frontend.endpoints.delete.useMutation({
@@ -159,12 +159,12 @@ export function EndpointsList({ onRefresh }: EndpointsListProps) {
         const apiKeyPlaceholder = endpointIsPublic
           ? "YOUR_PUBLIC_API_KEY"
           : "YOUR_PRIVATE_API_KEY";
-        const tunnelBase = (
-          externalTunnelBaseUrl || "https://luckylion.run.place"
-        ).replace(/\/+$/, "");
-        const externalUrl = `${tunnelBase}/metamcp/${endpoint.name}/mcp?api_key=${encodeURIComponent(
-          activeApiKey?.key || apiKeyPlaceholder,
-        )}`;
+        const publicBase = publicEndpointBaseUrl?.replace(/\/+$/, "");
+        const externalUrl = publicBase
+          ? `${publicBase}/${endpoint.name}/mcp?api_key=${encodeURIComponent(
+              activeApiKey?.key || apiKeyPlaceholder,
+            )}`
+          : null;
 
         return (
           <div className="space-y-1 px-3 py-2">
@@ -239,12 +239,14 @@ export function EndpointsList({ onRefresh }: EndpointsListProps) {
                 </Button>
               </div>
               <div className="flex items-center gap-2">
-                <span>External: {externalUrl}</span>
+                <span>External: {externalUrl || "Public route unavailable"}</span>
                 <Button
                   variant="ghost"
                   size="sm"
                   className="h-2 w-2 p-0 hover:bg-muted"
+                  disabled={!externalUrl}
                   onClick={() => {
+                    if (!externalUrl) return;
                     navigator.clipboard.writeText(externalUrl);
                     toast.success(t("endpoints:list.externalUrlCopied"));
                   }}

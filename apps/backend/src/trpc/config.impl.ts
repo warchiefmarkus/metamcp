@@ -84,6 +84,10 @@ export const configImplementations = {
     return await configService.getExternalTunnelBaseUrl();
   },
 
+  getPublicEndpointBaseUrl: async (): Promise<string> => {
+    return await configService.getPublicEndpointBaseUrl();
+  },
+
   setExternalTunnelBaseUrl: async (input: {
     baseUrl: string;
   }): Promise<{ success: boolean }> => {
