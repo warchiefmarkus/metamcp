@@ -1,4 +1,5 @@
 import { env } from "next-runtime-env";
+import { resolveBrowserAppUrl } from "./local-origin";
 
 export const getAppUrl = () => {
   // Check if we're running on the server side
@@ -21,5 +22,7 @@ export const getAppUrl = () => {
     // Fallback to current origin on client side
     return window.location.origin;
   }
-  return NEXT_PUBLIC_APP_URL;
+  // Allow either loopback spelling at the same local port. This also keeps
+  // Better Auth requests on the browser's own origin (and cookie scope).
+  return resolveBrowserAppUrl(NEXT_PUBLIC_APP_URL, window.location.origin);
 };
