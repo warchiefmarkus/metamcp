@@ -93,7 +93,7 @@ export default function NamespaceDetailPage({
     mcpServerUuid: uuid, // Using namespace UUID as the "server" UUID for connection
     transportType: McpServerTypeEnum.Enum.SSE,
     command: "", // Not needed for metamcp proxy
-    args: "",
+    args: [],
     url: `/mcp-proxy/metamcp/${uuid}/sse`, // Connect to metamcp proxy endpoint
     env: {},
     bearerToken: undefined,

@@ -4,6 +4,7 @@ import logger from "@/utils/logger";
 
 import { auth } from "../../auth";
 import { oauthRepository } from "../../db/repositories";
+import { canonicalMcpResource, isAllowedChatGptRedirect } from "./resource";
 import {
   generateSecureAuthCode,
   getBaseUrl,
@@ -28,6 +29,7 @@ authorizationRouter.get("/oauth/authorize", rateLimitAuth, async (req, res) => {
       state,
       code_challenge,
       code_challenge_method,
+      resource,
     } = req.query;
 
     logger.info("OAuth authorize request:", {
@@ -65,19 +67,27 @@ authorizationRouter.get("/oauth/authorize", rateLimitAuth, async (req, res) => {
     }
 
     // Validate PKCE method (OAuth 2.1 recommends S256)
-    if (code_challenge_method !== "S256" && code_challenge_method !== "plain") {
+    if (code_challenge_method !== "S256") {
       return res.status(400).json({
         error: "invalid_request",
         error_description:
-          "Unsupported code_challenge_method. Supported: S256, plain",
+          "Unsupported code_challenge_method. Supported: S256",
       });
     }
 
     // OAuth 2.1 Security: Validate redirect URI format
-    if (!validateRedirectUri(redirect_uri as string)) {
+    if (!validateRedirectUri(redirect_uri as string) || (process.env.OAUTH_PUBLIC_BASE_URL && !isAllowedChatGptRedirect(redirect_uri))) {
       return res.status(400).json({
         error: "invalid_request",
         error_description: "Invalid redirect_uri format or insecure scheme",
+      });
+    }
+
+    const canonicalResource = canonicalMcpResource(resource, getBaseUrl(req));
+    if (!canonicalResource) {
+      return res.status(400).json({
+        error: "invalid_target",
+        error_description: "Invalid or missing MCP OAuth resource indicator",
       });
     }
 
@@ -110,6 +120,7 @@ authorizationRouter.get("/oauth/authorize", rateLimitAuth, async (req, res) => {
     const oauthParams: OAuthParams = {
       client_id: finalClientId,
       redirect_uri: redirect_uri as string,
+      resource: canonicalResource,
       scope: scope ? (scope as string) : "admin",
       state: state ? (state as string) : undefined,
       code_challenge: code_challenge ? (code_challenge as string) : undefined,
@@ -153,6 +164,7 @@ authorizationRouter.get("/oauth/authorize", rateLimitAuth, async (req, res) => {
               client_id: oauthParams.client_id,
               redirect_uri: oauthParams.redirect_uri,
               scope: oauthParams.scope || "admin",
+              resource: oauthParams.resource,
               user_id: sessionData.user.id,
               code_challenge: oauthParams.code_challenge || null,
               code_challenge_method: oauthParams.code_challenge_method || null,
@@ -231,42 +243,6 @@ authorizationRouter.get("/oauth/callback", async (req, res) => {
           return res.status(400).send("Authorization code has expired");
         }
 
-        // Check if the redirect_uri points back to our own callback endpoint
-        // This would create an infinite loop, so we need to handle it differently
-        const baseUrl = getBaseUrl(req);
-        const ourCallbackUrl = `${baseUrl}/oauth/callback`;
-
-        if (
-          codeData.redirect_uri === ourCallbackUrl ||
-          codeData.redirect_uri.includes("/oauth/callback")
-        ) {
-          // This is likely a development/testing scenario where the client redirect_uri
-          // points back to our callback. Instead of redirecting, show a success page.
-
-          return res.send(`
-            <html>
-              <head><title>OAuth Authorization Successful</title></head>
-              <body>
-                <h1>Authorization Successful</h1>
-                <p>Authorization code: <code>${code}</code></p>
-                <p>State: <code>${state || "none"}</code></p>
-                <p>You can now exchange this code for an access token using the token endpoint.</p>
-                <pre>
-POST ${baseUrl}/oauth/token
-Content-Type: application/json
-
-{
-  "grant_type": "authorization_code",
-  "code": "${code}",
-  "client_id": "${codeData.client_id}",
-  "redirect_uri": "${codeData.redirect_uri}"
-}
-                </pre>
-              </body>
-            </html>
-          `);
-        }
-
         // Code exists and is valid, redirect back to the original redirect_uri
         const redirectUrl = new URL(codeData.redirect_uri);
         redirectUrl.searchParams.set("code", code as string);
@@ -283,6 +259,19 @@ Content-Type: application/json
     }
 
     const { client_id, redirect_uri, state } = oauthParams;
+    const registeredClient = await oauthRepository.getClient(client_id);
+    if (
+      !registeredClient ||
+      !registeredClient.redirect_uris.includes(redirect_uri) ||
+      !validateRedirectUri(redirect_uri) ||
+      (process.env.OAUTH_PUBLIC_BASE_URL && !isAllowedChatGptRedirect(redirect_uri)) ||
+      !canonicalMcpResource(oauthParams.resource, getBaseUrl(req)) ||
+      oauthParams.code_challenge_method !== "S256" ||
+      typeof oauthParams.code_challenge !== "string" ||
+      !/^[A-Za-z0-9_-]{43}$/.test(oauthParams.code_challenge)
+    ) {
+      return res.status(400).json({ error: "invalid_request" });
+    }
 
     // Verify user authentication by checking session cookies
     if (!req.headers.cookie) {
@@ -333,6 +322,7 @@ Content-Type: application/json
       client_id,
       redirect_uri,
       scope: oauthParams.scope || "admin",
+      resource: oauthParams.resource,
       user_id: sessionData.user.id,
       code_challenge: oauthParams.code_challenge || null,
       code_challenge_method: oauthParams.code_challenge_method || null,

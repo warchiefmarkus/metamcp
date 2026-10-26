@@ -1,7 +1,10 @@
 import { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { isJSONRPCRequest } from "@modelcontextprotocol/sdk/types.js";
+import {
+  isJSONRPCRequest,
+  isJSONRPCResponse,
+} from "@modelcontextprotocol/sdk/types.js";
 
-import logger from "@/utils/logger";
+import logger from "../utils/logger";
 
 function onClientError(error: Error) {
   // Don't log "Not connected" errors as they're expected when connections close
@@ -44,6 +47,7 @@ export default function mcpProxy({
   let cleanupCalled = false;
 
   let reportedServerSession = false;
+  let initializeRequestId: string | number | undefined;
 
   // Helper function to safely trigger cleanup once
   const triggerCleanup = async () => {
@@ -87,6 +91,14 @@ export default function mcpProxy({
   };
 
   transportToClient.onmessage = (message) => {
+    // The raw proxy does not use SDK Client.connect(), so it must mirror the
+    // HTTP transport protocol-version negotiation itself. Remember the
+    // initialize request and apply the server-selected version when its
+    // response comes back before forwarding subsequent client messages.
+    if (isJSONRPCRequest(message) && message.method === "initialize") {
+      initializeRequestId = message.id;
+    }
+
     // Check if server transport is still connected before sending
     if (transportToServerClosed) {
       logger.debug("Ignoring message to closed server transport");
@@ -132,6 +144,24 @@ export default function mcpProxy({
         );
       }
       reportedServerSession = true;
+    }
+
+    if (
+      initializeRequestId !== undefined &&
+      isJSONRPCResponse(message) &&
+      message.id === initializeRequestId
+    ) {
+      const result = message.result as { protocolVersion?: unknown };
+      if (
+        typeof result.protocolVersion === "string" &&
+        typeof transportToServer.setProtocolVersion === "function"
+      ) {
+        transportToServer.setProtocolVersion(result.protocolVersion);
+        logger.info(
+          `Proxy negotiated downstream MCP protocol version: ${result.protocolVersion}`,
+        );
+      }
+      initializeRequestId = undefined;
     }
 
     // Check if client transport is still connected before sending

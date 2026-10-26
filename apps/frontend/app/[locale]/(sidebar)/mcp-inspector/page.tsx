@@ -92,7 +92,7 @@ function McpInspectorContent() {
     mcpServerUuid: selectedServerUuid,
     transportType: selectedServer?.type || McpServerTypeEnum.Enum.STDIO,
     command: selectedServer?.command || "",
-    args: selectedServer?.args?.join(" ") || "",
+    args: selectedServer?.args || [],
     url: selectedServer?.url || "",
     env: selectedServer?.env || {},
     bearerToken: selectedServer?.bearerToken || undefined,

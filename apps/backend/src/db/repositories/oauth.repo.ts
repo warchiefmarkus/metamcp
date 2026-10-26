@@ -6,7 +6,7 @@ import {
   OAuthClient,
   OAuthClientCreateInput,
 } from "@repo/zod-types";
-import { eq, lt } from "drizzle-orm";
+import { and, eq, gt, lt } from "drizzle-orm";
 
 import { db } from "../index";
 import {
@@ -60,6 +60,7 @@ export class OAuthRepository {
       client_id: data.client_id,
       redirect_uri: data.redirect_uri,
       scope: data.scope,
+      resource: data.resource,
       user_id: data.user_id,
       code_challenge: data.code_challenge,
       code_challenge_method: data.code_challenge_method,
@@ -71,6 +72,20 @@ export class OAuthRepository {
     await db
       .delete(oauthAuthorizationCodesTable)
       .where(eq(oauthAuthorizationCodesTable.code, code));
+  }
+
+  // Single-use enforcement under concurrent token exchanges.
+  async consumeAuthCode(code: string): Promise<boolean> {
+    const consumed = await db
+      .delete(oauthAuthorizationCodesTable)
+      .where(
+        and(
+          eq(oauthAuthorizationCodesTable.code, code),
+          gt(oauthAuthorizationCodesTable.expires_at, new Date()),
+        ),
+      )
+      .returning({ code: oauthAuthorizationCodesTable.code });
+    return consumed.length === 1;
   }
 
   // ===== Access Tokens =====
@@ -93,6 +108,7 @@ export class OAuthRepository {
       client_id: data.client_id,
       user_id: data.user_id,
       scope: data.scope,
+      resource: data.resource,
       expires_at: new Date(data.expires_at),
     });
   }

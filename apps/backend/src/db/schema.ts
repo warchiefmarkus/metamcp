@@ -455,6 +455,7 @@ export const oauthAuthorizationCodesTable = pgTable(
       .references(() => oauthClientsTable.client_id, { onDelete: "cascade" }),
     redirect_uri: text("redirect_uri").notNull(),
     scope: text("scope").notNull().default("admin"),
+    resource: text("resource"),
     user_id: text("user_id")
       .notNull()
       .references(() => usersTable.id, { onDelete: "cascade" }),
@@ -484,6 +485,7 @@ export const oauthAccessTokensTable = pgTable(
       .notNull()
       .references(() => usersTable.id, { onDelete: "cascade" }),
     scope: text("scope").notNull().default("admin"),
+    resource: text("resource"),
     expires_at: timestamp("expires_at", { withTimezone: true }).notNull(),
     created_at: timestamp("created_at", { withTimezone: true })
       .notNull()

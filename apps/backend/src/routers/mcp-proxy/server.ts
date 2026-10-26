@@ -14,16 +14,19 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { McpServerErrorStatusEnum, McpServerTypeEnum } from "@repo/zod-types";
 import express from "express";
-import { parse as shellParseArgs } from "shell-quote";
 import { findActualExecutable } from "spawn-rx";
 
 import logger from "@/utils/logger";
 
 import { mcpServersRepository } from "../../db/repositories";
 import mcpProxy from "../../lib/mcp-proxy";
-import { transformDockerUrl } from "../../lib/metamcp/client";
+import {
+  startTransportWithTimeout,
+  transformDockerUrl,
+} from "../../lib/metamcp/client";
 import { mcpServerPool } from "../../lib/metamcp/mcp-server-pool";
 import { resolveEnvVariables } from "../../lib/metamcp/utils";
+import { parseStdioArgs } from "../../lib/stdio-transport/args";
 import { ProcessManagedStdioTransport } from "../../lib/stdio-transport/process-managed-transport";
 import { betterAuthMcpMiddleware } from "../../middleware/better-auth-mcp.middleware";
 
@@ -31,6 +34,7 @@ const SSE_HEADERS_PASSTHROUGH = ["authorization"];
 const STREAMABLE_HTTP_HEADERS_PASSTHROUGH = [
   "authorization",
   "mcp-session-id",
+  "mcp-protocol-version",
   "last-event-id",
 ];
 
@@ -340,6 +344,10 @@ const cleanupSession = async (sessionId: string) => {
   logger.info(`Session ${sessionId} cleanup completed`);
 };
 
+const parseStdioArgsFromQuery = (
+  query: express.Request["query"],
+): string[] => parseStdioArgs(query.argsJson, query.args);
+
 const createTransport = async (req: express.Request): Promise<Transport> => {
   const query = req.query;
   logger.info("Query parameters:", JSON.stringify(query));
@@ -348,7 +356,7 @@ const createTransport = async (req: express.Request): Promise<Transport> => {
 
   if (transportType === McpServerTypeEnum.Enum.STDIO) {
     const command = query.command as string;
-    const origArgs = shellParseArgs(query.args as string) as string[];
+    const origArgs = parseStdioArgsFromQuery(query);
     const queryEnv = query.env ? JSON.parse(query.env as string) : {};
 
     // Resolve environment variable placeholders
@@ -396,7 +404,10 @@ const createTransport = async (req: express.Request): Promise<Transport> => {
     });
 
     try {
-      await transport.start();
+      await startTransportWithTimeout(
+        transport,
+        `STDIO transport for ${command}`,
+      );
       return transport;
     } catch (error) {
       // If the transport fails to start, put it in cooldown
@@ -441,7 +452,7 @@ const createTransport = async (req: express.Request): Promise<Transport> => {
         headers,
       },
     });
-    await transport.start();
+    await startTransportWithTimeout(transport, `SSE transport for ${url}`);
     return transport;
   } else if (transportType === McpServerTypeEnum.Enum.STREAMABLE_HTTP) {
     const url = transformDockerUrl(query.url as string);
@@ -471,7 +482,10 @@ const createTransport = async (req: express.Request): Promise<Transport> => {
         headers,
       },
     });
-    await transport.start();
+    await startTransportWithTimeout(
+      transport,
+      `Streamable HTTP transport for ${url}`,
+    );
     return transport;
   } else {
     logger.error(`Invalid transport type: ${transportType}`);
@@ -533,7 +547,7 @@ serverRouter.post("/mcp", async (req, res) => {
           // Try to extract server UUID from the command/args
           const query = req.query;
           const command = query.command as string;
-          const origArgs = shellParseArgs(query.args as string) as string[];
+          const origArgs = parseStdioArgsFromQuery(query);
 
           const serverUuid = await extractServerUuidFromStdioCommand(
             command,
@@ -724,7 +738,7 @@ serverRouter.get("/stdio", async (req, res) => {
       // Try to extract server UUID from the command/args
       const query = req.query;
       const command = query.command as string;
-      const origArgs = shellParseArgs(query.args as string) as string[];
+      const origArgs = parseStdioArgsFromQuery(query);
 
       logger.info(
         `STDIO crash handler called for command: ${command} ${origArgs.join(" ")}`,
@@ -768,7 +782,7 @@ serverRouter.get("/stdio", async (req, res) => {
         // Process failed quickly, likely a startup error
         const query = req.query;
         const command = query.command as string;
-        const origArgs = shellParseArgs(query.args as string) as string[];
+        const origArgs = parseStdioArgsFromQuery(query);
         const queryEnv = query.env ? JSON.parse(query.env as string) : {};
         const resolvedQueryEnv = resolveEnvVariables(queryEnv);
         const env = {
@@ -788,63 +802,48 @@ serverRouter.get("/stdio", async (req, res) => {
     if (stdinTransport.stderr) {
       stdinTransport.stderr.on("data", (chunk: Buffer) => {
         const errorContent = chunk.toString();
-        if (errorContent.includes("MODULE_NOT_FOUND")) {
-          webAppTransport
-            .send({
-              jsonrpc: "2.0",
-              method: "notifications/stderr",
-              params: {
-                content: "Command not found, transports removed",
-              },
-            })
-            .catch((error) => {
-              // Ignore "Not connected" errors during cleanup
-              if (error?.message && !error.message.includes("Not connected")) {
-                logger.error("Error sending stderr notification:", error);
-              }
-            });
-          webAppTransport.close();
-          cleanupSession(webAppTransport.sessionId);
-          logger.error("Command not found, transports removed");
-        } else {
-          // Check for common startup errors that should trigger cooldown
-          if (
-            errorContent.includes("ENOENT") ||
-            errorContent.includes("no such file or directory")
-          ) {
-            const query = req.query;
-            const command = query.command as string;
-            const origArgs = shellParseArgs(query.args as string) as string[];
-            const queryEnv = query.env ? JSON.parse(query.env as string) : {};
-            const resolvedQueryEnv = resolveEnvVariables(queryEnv);
-            const env = {
-              ...process.env,
-              ...defaultEnvironment,
-              ...resolvedQueryEnv,
-            };
-            const { cmd, args } = findActualExecutable(command, origArgs);
 
-            setStdioCooldown(cmd, args, env);
-            logger.info(
-              `STDIO process reported startup error, setting cooldown: ${cmd} ${args.join(" ")}`,
-            );
-          }
+        // A child process can report MODULE_NOT_FOUND for one of its own
+        // dependencies even though the configured command itself exists.
+        // Do not misclassify that as "command not found" or tear down an
+        // otherwise healthy MCP transport. If the child actually exits,
+        // onclose will handle the failure/cooldown path.
+        if (
+          errorContent.includes("ENOENT") ||
+          errorContent.includes("no such file or directory")
+        ) {
+          const query = req.query;
+          const command = query.command as string;
+          const origArgs = parseStdioArgsFromQuery(query);
+          const queryEnv = query.env ? JSON.parse(query.env as string) : {};
+          const resolvedQueryEnv = resolveEnvVariables(queryEnv);
+          const env = {
+            ...process.env,
+            ...defaultEnvironment,
+            ...resolvedQueryEnv,
+          };
+          const { cmd, args } = findActualExecutable(command, origArgs);
 
-          webAppTransport
-            .send({
-              jsonrpc: "2.0",
-              method: "notifications/stderr",
-              params: {
-                content: errorContent,
-              },
-            })
-            .catch((error) => {
-              // Ignore "Not connected" errors as they're expected when connections close
-              if (error?.message && !error.message.includes("Not connected")) {
-                logger.error("Error sending stderr notification:", error);
-              }
-            });
+          setStdioCooldown(cmd, args, env);
+          logger.info(
+            `STDIO process reported startup error, setting cooldown: ${cmd} ${args.join(" ")}`,
+          );
         }
+
+        webAppTransport
+          .send({
+            jsonrpc: "2.0",
+            method: "notifications/stderr",
+            params: {
+              content: errorContent,
+            },
+          })
+          .catch((error) => {
+            // Ignore "Not connected" errors as they're expected when connections close
+            if (error?.message && !error.message.includes("Not connected")) {
+              logger.error("Error sending stderr notification:", error);
+            }
+          });
       });
     }
 

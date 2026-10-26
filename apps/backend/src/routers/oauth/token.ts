@@ -3,7 +3,8 @@ import express from "express";
 import logger from "@/utils/logger";
 
 import { oauthRepository } from "../../db/repositories";
-import { generateSecureAccessToken, rateLimitToken } from "./utils";
+import { generateSecureAccessToken, getBaseUrl, rateLimitToken } from "./utils";
+import { canonicalMcpResource } from "./resource";
 
 const tokenRouter = express.Router();
 
@@ -29,7 +30,7 @@ tokenRouter.post("/oauth/token", rateLimitToken, async (req, res) => {
       });
     }
 
-    const { grant_type, code, redirect_uri, client_id, code_verifier } =
+    const { grant_type, code, redirect_uri, client_id, code_verifier, resource } =
       req.body;
 
     // Validate grant type
@@ -63,6 +64,14 @@ tokenRouter.post("/oauth/token", rateLimitToken, async (req, res) => {
       return res.status(400).json({
         error: "invalid_grant",
         error_description: "Authorization code has expired",
+      });
+    }
+
+    const requestedResource = canonicalMcpResource(resource, getBaseUrl(req));
+    if (!requestedResource || requestedResource !== codeData.resource) {
+      return res.status(400).json({
+        error: "invalid_target",
+        error_description: "OAuth resource does not match the authorization request",
       });
     }
 
@@ -137,7 +146,7 @@ tokenRouter.post("/oauth/token", rateLimitToken, async (req, res) => {
       });
     }
 
-    if (!code_verifier) {
+    if (typeof code_verifier !== "string" || !/^[A-Za-z0-9._~-]{43,128}$/.test(code_verifier)) {
       return res.status(400).json({
         error: "invalid_request",
         error_description: "PKCE code verifier is required",
@@ -151,8 +160,6 @@ tokenRouter.post("/oauth/token", rateLimitToken, async (req, res) => {
     if (codeData.code_challenge_method === "S256") {
       const hash = crypto.createHash("sha256").update(code_verifier).digest();
       challengeFromVerifier = hash.toString("base64url");
-    } else if (codeData.code_challenge_method === "plain") {
-      challengeFromVerifier = code_verifier;
     } else {
       return res.status(400).json({
         error: "invalid_grant",
@@ -167,8 +174,13 @@ tokenRouter.post("/oauth/token", rateLimitToken, async (req, res) => {
       });
     }
 
-    // Code is valid, delete it (authorization codes are single-use)
-    await oauthRepository.deleteAuthCode(code);
+    // Atomic consume avoids two concurrent exchanges minting tokens for one code.
+    if (!(await oauthRepository.consumeAuthCode(code))) {
+      return res.status(400).json({
+        error: "invalid_grant",
+        error_description: "Authorization code already consumed or expired",
+      });
+    }
 
     // Generate access token
     const accessToken = generateSecureAccessToken();
@@ -179,6 +191,7 @@ tokenRouter.post("/oauth/token", rateLimitToken, async (req, res) => {
       client_id: codeData.client_id,
       user_id: codeData.user_id,
       scope: codeData.scope,
+      resource: requestedResource,
       expires_at: Date.now() + expiresIn * 1000,
     });
 
@@ -241,7 +254,8 @@ tokenRouter.post("/oauth/introspect", async (req, res) => {
     res.json({
       active: true,
       scope: tokenData.scope,
-      client_id: "mcp_client", // In production, store and return actual client_id
+      aud: tokenData.resource,
+      client_id: tokenData.client_id,
       token_type: "Bearer",
       exp: Math.floor(tokenData.expires_at.getTime() / 1000),
       iat: Math.floor((tokenData.expires_at.getTime() - 3600 * 1000) / 1000), // Issued 1 hour before expiry

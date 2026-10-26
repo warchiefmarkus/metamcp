@@ -144,7 +144,7 @@ export default function McpServerDetailPage({
     mcpServerUuid: uuid,
     transportType: server?.type || McpServerTypeEnum.Enum.STDIO,
     command: server?.command || "",
-    args: server?.args?.join(" ") || "",
+    args: server?.args || [],
     url: server?.url || "",
     env: server?.env || {},
     bearerToken: server?.bearerToken || undefined,

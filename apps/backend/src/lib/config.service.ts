@@ -8,7 +8,8 @@ export const configService = {
     const config = await configRepo.getConfig(
       ConfigKeyEnum.Enum.DISABLE_SIGNUP,
     );
-    return config?.value === "true";
+    // Registration is disabled unless an administrator explicitly enables it.
+    return config?.value !== "false";
   },
 
   async setSignupDisabled(disabled: boolean): Promise<void> {
@@ -23,7 +24,7 @@ export const configService = {
     const config = await configRepo.getConfig(
       ConfigKeyEnum.Enum.DISABLE_SSO_SIGNUP,
     );
-    return config?.value === "true";
+    return config?.value !== "false";
   },
 
   async setSsoSignupDisabled(disabled: boolean): Promise<void> {

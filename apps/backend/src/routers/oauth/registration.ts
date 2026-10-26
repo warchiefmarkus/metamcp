@@ -3,11 +3,14 @@ import express from "express";
 import logger from "@/utils/logger";
 
 import { oauthRepository } from "../../db/repositories";
+import { isAllowedChatGptRedirect } from "./resource";
+import { permittedDcrGrantTypes } from "./oauth-registration-policy";
 import {
   generateSecureClientId,
   generateSecureClientSecret,
   rateLimitToken,
   validateRedirectUri,
+  getBaseUrl,
 } from "./utils";
 
 const registrationRouter = express.Router();
@@ -58,7 +61,7 @@ registrationRouter.post("/oauth/register", rateLimitToken, async (req, res) => {
 
     // OAuth 2.1 Security: Validate redirect URIs
     for (const uri of redirect_uris) {
-      if (!validateRedirectUri(uri)) {
+      if (!validateRedirectUri(uri) || (process.env.OAUTH_PUBLIC_BASE_URL && !isAllowedChatGptRedirect(uri))) {
         return res.status(400).json({
           error: "invalid_redirect_uri",
           error_description: `Invalid redirect URI: ${uri}. Must use secure scheme and valid format.`,
@@ -67,10 +70,18 @@ registrationRouter.post("/oauth/register", rateLimitToken, async (req, res) => {
     }
 
     // OAuth 2.1 Security: Set secure defaults for optional parameters
-    const clientGrantTypes =
-      grant_types && Array.isArray(grant_types)
-        ? grant_types
-        : ["authorization_code"]; // Only authorization_code by default
+    const clientGrantTypes = permittedDcrGrantTypes(grant_types);
+    if (!clientGrantTypes) {
+      return res.status(400).json({
+        error: "invalid_request",
+        error_description: "Unsupported OAuth client grant types",
+      });
+    }
+    // ChatGPT may request refresh_token during DCR, but until we implement
+    // refresh rotation we register and advertise authorization_code only.
+    if (Array.isArray(grant_types) && grant_types.includes("refresh_token")) {
+      logger.info("DCR: client requested refresh_token; registered authorization_code only");
+    }
 
     const clientResponseTypes =
       response_types && Array.isArray(response_types)
@@ -81,11 +92,7 @@ registrationRouter.post("/oauth/register", rateLimitToken, async (req, res) => {
     const clientTokenEndpointAuthMethod = token_endpoint_auth_method || "none";
 
     // Validate grant types and response types consistency
-    const validGrantTypes = [
-      "authorization_code",
-      "refresh_token",
-      "client_credentials",
-    ];
+    const validGrantTypes = ["authorization_code"];
     const validResponseTypes = ["code"];
     const validAuthMethods = [
       "none",
@@ -152,7 +159,7 @@ registrationRouter.post("/oauth/register", rateLimitToken, async (req, res) => {
     await oauthRepository.upsertClient(clientRegistration);
 
     // Prepare response according to RFC 7591 with OAuth 2.1 guidance
-    const baseUrl = req.protocol + "://" + req.get("host");
+    const baseUrl = getBaseUrl(req);
     const response: any = {
       client_id: clientId,
       client_name: clientRegistration.client_name,
@@ -209,7 +216,7 @@ registrationRouter.post("/oauth/register", rateLimitToken, async (req, res) => {
  */
 registrationRouter.get("/oauth/register", async (req, res) => {
   try {
-    const baseUrl = req.protocol + "://" + req.get("host");
+    const baseUrl = getBaseUrl(req);
 
     res.json({
       registration_endpoint: `${baseUrl}/oauth/register`,

@@ -44,6 +44,7 @@ export const OAuthAuthorizationCodeSchema = z.object({
   client_id: z.string(),
   redirect_uri: z.string(),
   scope: z.string(),
+  resource: z.string().nullable(),
   user_id: z.string(),
   code_challenge: z.string().nullable(),
   code_challenge_method: z.string().nullable(),
@@ -57,6 +58,7 @@ export const OAuthAccessTokenSchema = z.object({
   client_id: z.string(),
   user_id: z.string(),
   scope: z.string(),
+  resource: z.string().nullable(),
   expires_at: z.date(),
   created_at: z.date(),
 });
@@ -86,6 +88,7 @@ export const OAuthAuthorizationCodeCreateInputSchema = z.object({
   client_id: z.string(),
   redirect_uri: z.string(),
   scope: z.string(),
+  resource: z.string(),
   user_id: z.string(),
   code_challenge: z.string().nullable().optional(),
   code_challenge_method: z.string().nullable().optional(),
@@ -96,6 +99,7 @@ export const OAuthAccessTokenCreateInputSchema = z.object({
   client_id: z.string(),
   user_id: z.string(),
   scope: z.string(),
+  resource: z.string(),
   expires_at: z.number(), // timestamp
 });
 

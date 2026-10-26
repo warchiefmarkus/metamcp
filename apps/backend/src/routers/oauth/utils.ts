@@ -2,11 +2,13 @@ import { createHash, randomBytes } from "crypto";
 import express from "express";
 
 import logger from "@/utils/logger";
+import { configuredOAuthPublicOrigin } from "./oauth-public-origin";
 
 // OAuth 2.0 Authorization Parameters interface
 export interface OAuthParams {
   client_id: string;
   redirect_uri: string;
+  resource: string;
   scope?: string;
   state?: string;
   code_challenge?: string;
@@ -127,13 +129,16 @@ export function verifyClientSecret(
 }
 
 /**
- * Helper function to get the correct base URL from request
- * Prioritizes APP_URL environment variable, then checks proxy headers
+ * OAuth issuer/public origin is independent from APP_URL (which may be localhost
+ * for the Windows Host, even when MCP is exposed through a TLS reverse proxy).
+ * Set OAUTH_PUBLIC_BASE_URL only after the public OAuth routes are deployed.
  */
 export function getBaseUrl(req: express.Request): string {
-  // Prioritize APP_URL environment variable
+  const publicBase = configuredOAuthPublicOrigin();
+  if (publicBase) return publicBase;
+
   if (process.env.APP_URL) {
-    return process.env.APP_URL;
+    return process.env.APP_URL.replace(/\/+$/, "");
   }
 
   // Check for forwarded headers from Next.js proxy

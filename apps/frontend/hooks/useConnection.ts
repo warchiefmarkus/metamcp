@@ -53,7 +53,7 @@ interface UseConnectionOptions {
   mcpServerUuid: string;
   transportType: McpServerType;
   command: string;
-  args: string;
+  args: string[];
   url: string;
   env: Record<string, string>;
   bearerToken?: string;
@@ -438,7 +438,7 @@ export function useConnection({
                 getAppUrl(),
               );
               mcpProxyServerUrl.searchParams.append("command", command);
-              mcpProxyServerUrl.searchParams.append("args", args);
+              mcpProxyServerUrl.searchParams.append("argsJson", JSON.stringify(args));
               mcpProxyServerUrl.searchParams.append("env", JSON.stringify(env));
               transportOptions = {
                 authProvider: authProvider,

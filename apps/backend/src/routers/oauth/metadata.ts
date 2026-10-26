@@ -3,6 +3,7 @@ import express from "express";
 import logger from "@/utils/logger";
 
 import { getBaseUrl } from "./utils";
+import { resourceForEndpoint } from "./resource";
 
 const metadataRouter = express.Router();
 
@@ -13,7 +14,7 @@ const metadataRouter = express.Router();
  * https://modelcontextprotocol.io/specification/draft/basic/authorization
  */
 metadataRouter.get(
-  "/.well-known/oauth-protected-resource",
+  ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/metamcp/:endpointName/mcp"],
   async (req, res) => {
     try {
       const baseUrl = getBaseUrl(req);
@@ -24,7 +25,7 @@ metadataRouter.get(
 
       // Ensure the resource URL has a trailing slash for OAuth validation
       // This is required by RFC 9728 for exact resource matching
-      const resourceUrl = baseUrl.endsWith("/") ? baseUrl : baseUrl + "/";
+      const resourceUrl = resourceForEndpoint(baseUrl, req.params.endpointName || "Public");
 
       const metadata = {
         // Resource identifier - the protected resource's canonical URI
@@ -98,9 +99,8 @@ metadataRouter.get(
     try {
       const baseUrl = getBaseUrl(req);
 
-      // Ensure the issuer URL has a trailing slash for OAuth validation
-      // This is required by RFC 8414 and RFC 9728 for exact matching
-      const issuerUrl = baseUrl.endsWith("/") ? baseUrl : baseUrl + "/";
+      // Exact equality with protected-resource authorization_servers is required.
+      const issuerUrl = baseUrl;
 
       const metadata = {
         // Issuer identifier (required by RFC 8414)
@@ -119,7 +119,7 @@ metadataRouter.get(
         response_modes_supported: ["query"],
 
         // Supported grant types for MCP
-        grant_types_supported: ["authorization_code", "refresh_token"],
+        grant_types_supported: ["authorization_code"],
 
         // Authentication methods
         token_endpoint_auth_methods_supported: [

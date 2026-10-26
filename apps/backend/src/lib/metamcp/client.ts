@@ -18,6 +18,96 @@ import { resolveEnvVariables } from "./utils";
 const sleep = (time: number) =>
   new Promise<void>((resolve) => setTimeout(() => resolve(), time));
 
+const DEFAULT_CONNECT_TIMEOUT_MS = 30_000;
+const MIN_CONNECT_TIMEOUT_MS = 5_000;
+const MAX_CONNECT_TIMEOUT_MS = 300_000;
+
+const getConnectTimeoutMs = (): number => {
+  const configured = Number(process.env.METAMCP_CONNECT_TIMEOUT_MS);
+  if (!Number.isFinite(configured) || configured <= 0) {
+    return DEFAULT_CONNECT_TIMEOUT_MS;
+  }
+
+  return Math.min(
+    Math.max(configured, MIN_CONNECT_TIMEOUT_MS),
+    MAX_CONNECT_TIMEOUT_MS,
+  );
+};
+
+const withConnectTimeout = async <T>(
+  operation: Promise<T>,
+  description: string,
+): Promise<T> => {
+  const timeoutMs = getConnectTimeoutMs();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${description} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    timer.unref?.();
+  });
+
+  try {
+    return await Promise.race([operation, timeout]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+};
+
+export const startTransportWithTimeout = async (
+  transport: Transport,
+  description = "MCP transport startup",
+): Promise<void> => {
+  try {
+    await withConnectTimeout(transport.start(), description);
+  } catch (error) {
+    try {
+      await transport.close();
+    } catch (cleanupError) {
+      logger.error(
+        `Failed to close transport after ${description} failed:`,
+        cleanupError,
+      );
+    }
+    throw error;
+  }
+};
+
+const connectClientWithTimeout = async (
+  client: Client,
+  transport: Transport,
+  serverName: string,
+): Promise<void> => {
+  await withConnectTimeout(
+    client.connect(transport),
+    `MCP connection to ${serverName}`,
+  );
+};
+
+const closeClientAndTransport = async (
+  client: Client,
+  transport: Transport,
+): Promise<void> => {
+  let closeError: unknown;
+  try {
+    await transport.close();
+  } catch (error) {
+    closeError = error;
+  }
+
+  try {
+    await client.close();
+  } catch (error) {
+    closeError ??= error;
+  }
+
+  if (closeError !== undefined) {
+    throw closeError;
+  }
+};
+
 const getSafeNpxCwd = (command: string): string | undefined => {
   const normalizedCommand = command.toLowerCase();
   const isNpxCommand =
@@ -258,13 +348,12 @@ export const connectMetaMcpClient = async (
         };
       }
 
-      await client.connect(transport);
+      await connectClientWithTimeout(client, transport, serverParams.name);
 
       return {
         client,
         cleanup: async () => {
-          await transport!.close();
-          await client!.close();
+          await closeClientAndTransport(client!, transport!);
         },
         getProcessId: () =>
           transport instanceof ProcessManagedStdioTransport
@@ -291,24 +380,35 @@ export const connectMetaMcpClient = async (
 
       // CRITICAL FIX: Clean up transport/process on connection failure
       // This prevents orphaned processes from accumulating
-      if (transport) {
+      if (transport && client) {
+        try {
+          await closeClientAndTransport(client, transport);
+          console.log(
+            `Cleaned up MCP client and transport for failed connection to ${serverParams.name} (${serverParams.uuid})`,
+          );
+        } catch (cleanupError) {
+          console.error(
+            `Error cleaning up MCP client and transport for ${serverParams.name} (${serverParams.uuid}):`,
+            cleanupError,
+          );
+        }
+      } else if (transport) {
         try {
           await transport.close();
-          console.log(
-            `Cleaned up transport for failed connection to ${serverParams.name} (${serverParams.uuid})`,
-          );
         } catch (cleanupError) {
           console.error(
             `Error cleaning up transport for ${serverParams.name} (${serverParams.uuid}):`,
             cleanupError,
           );
         }
-      }
-      if (client) {
+      } else if (client) {
         try {
           await client.close();
         } catch (cleanupError) {
-          // Client may not be fully initialized, ignore
+          console.error(
+            `Error cleaning up client for ${serverParams.name} (${serverParams.uuid}):`,
+            cleanupError,
+          );
         }
       }
 

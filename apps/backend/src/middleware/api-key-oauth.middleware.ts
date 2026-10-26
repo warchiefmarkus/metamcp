@@ -8,6 +8,9 @@ import {
   authRateLimiter,
   getAuthRateLimitIdentifier,
 } from "../lib/auth-rate-limiter";
+import { getBaseUrl } from "../routers/oauth/utils";
+import { resourceForEndpoint, resourceMetadataUrl } from "../routers/oauth/resource";
+import { oauthRepository } from "../db/repositories";
 
 // Extend Express Request interface for our custom properties
 export interface ApiKeyAuthenticatedRequest extends express.Request {
@@ -23,29 +26,6 @@ export interface ApiKeyAuthenticatedRequest extends express.Request {
 const apiKeysRepository = new ApiKeysRepository();
 
 /**
- * Helper function to get the correct base URL from request
- * Prioritizes APP_URL environment variable, then checks proxy headers
- */
-function getBaseUrl(req: express.Request): string {
-  // Prioritize APP_URL environment variable
-  if (process.env.APP_URL) {
-    return process.env.APP_URL;
-  }
-
-  // Check for forwarded headers from Next.js proxy
-  const forwardedHost = req.headers["x-forwarded-host"] as string;
-  const forwardedProto = req.headers["x-forwarded-proto"] as string;
-
-  if (forwardedHost) {
-    const protocol = forwardedProto || "http";
-    return `${protocol}://${forwardedHost}`;
-  }
-
-  // Fallback to request host
-  return `${req.protocol}://${req.get("host")}`;
-}
-
-/**
  * Validates OAuth bearer token using MCP token introspection
  * @param token OAuth bearer token
  * @param req Express request object
@@ -54,62 +34,36 @@ function getBaseUrl(req: express.Request): string {
 async function validateOAuthToken(
   token: string,
   req: express.Request,
+  endpoint: DatabaseEndpoint,
 ): Promise<{
   valid: boolean;
   user_id?: string;
   scopes?: string[];
   error?: string;
 }> {
-  try {
-    // Check if this is our MCP OAuth token format
-    if (token.startsWith("mcp_token_")) {
-      // For MCP tokens, use introspection endpoint to validate
-      // This allows us to check against the stored token data
-      try {
-        const baseUrl = getBaseUrl(req);
-        const introspectUrl = new URL("/oauth/introspect", baseUrl);
-
-        const introspectRequest = new Request(introspectUrl.toString(), {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ token }),
-        });
-
-        const introspectResponse = await fetch(introspectRequest);
-
-        if (!introspectResponse.ok) {
-          return { valid: false, error: "Token introspection failed" };
-        }
-
-        const introspectData = (await introspectResponse.json()) as {
-          active?: boolean;
-          sub?: string;
-          scope?: string;
-        };
-
-        if (!introspectData.active) {
-          return { valid: false, error: "Token is not active" };
-        }
-
-        return {
-          valid: true,
-          user_id: introspectData.sub,
-          scopes: introspectData.scope
-            ? introspectData.scope.split(" ")
-            : ["admin"],
-        };
-      } catch (error) {
-        logger.error("Error introspecting MCP token:", error);
-        return { valid: false, error: "Token validation failed" };
-      }
-    }
-
-    // Token is not a recognized MCP token format
+  if (!token.startsWith("mcp_token_")) {
     return { valid: false, error: "Unsupported token format" };
+  }
+
+  try {
+    // Validate against persisted token state directly. Avoid public HTTP
+    // introspection loops and always enforce the exact MCP resource audience.
+    const stored = await oauthRepository.getAccessToken(token);
+    const expectedAudience = resourceForEndpoint(getBaseUrl(req), endpoint.name);
+    if (!stored?.resource || stored.resource !== expectedAudience) {
+      return { valid: false, error: "OAuth token audience mismatch" };
+    }
+    if (stored.expires_at.getTime() <= Date.now()) {
+      await oauthRepository.deleteAccessToken(token);
+      return { valid: false, error: "Expired OAuth token" };
+    }
+    return {
+      valid: true,
+      user_id: stored.user_id,
+      scopes: stored.scope.trim().split(/\s+/),
+    };
   } catch (error) {
-    logger.error("Error validating OAuth token:", error);
+    logger.error("Error validating MCP OAuth token:", error);
     return { valid: false, error: "OAuth validation failed" };
   }
 }
@@ -240,7 +194,7 @@ export const authenticateApiKey = async (
 
       // If token looks like OAuth token or came from Authorization header, try OAuth first
       if (isOAuthLikeToken || source === "authorization") {
-        const oauthResult = await validateOAuthToken(token, req);
+        const oauthResult = await validateOAuthToken(token, req, endpoint);
 
         if (oauthResult.valid) {
           // OAuth token valid - perform access control and pass
@@ -310,7 +264,7 @@ export const authenticateApiKey = async (
       }
 
       // Validate OAuth token
-      const oauthResult = await validateOAuthToken(token, req);
+      const oauthResult = await validateOAuthToken(token, req, endpoint);
 
       if (oauthResult.valid) {
         // OAuth token valid - perform access control and pass
@@ -413,6 +367,10 @@ function checkOAuthAccess(
     };
   }
 
+  if (!oauthResult.scopes?.includes("admin")) {
+    return { allowed: false, message: "OAuth admin scope required" };
+  }
+
   // Check endpoint access based on user permissions:
   // 1. Public endpoints (user_id is null) - accessible to all authenticated users
   // 2. Private endpoints (user_id is not null) - only accessible to the owner
@@ -458,12 +416,13 @@ function sendOAuthChallengeResponse(
   endpoint: DatabaseEndpoint,
 ): express.Response {
   const baseUrl = getBaseUrl(req);
+  const metadataUrl = resourceMetadataUrl(baseUrl, endpoint.name);
 
   // Set WWW-Authenticate header for OAuth flow
   const bearerChallenge = [
     `Bearer realm="MetaMCP"`,
     `scope="admin"`,
-    `resource_metadata="${baseUrl}/.well-known/oauth-protected-resource"`,
+    `resource_metadata="${metadataUrl}"`,
   ].join(", ");
 
   res.set("WWW-Authenticate", bearerChallenge);
@@ -485,7 +444,7 @@ function sendOAuthChallengeResponse(
   return res.status(401).json({
     error: "authentication_required",
     error_description: errorDescription,
-    resource_metadata: `${baseUrl}/.well-known/oauth-protected-resource`,
+    resource_metadata: metadataUrl,
     supported_methods: authMethods,
     timestamp: new Date().toISOString(),
   });

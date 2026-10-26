@@ -24,5 +24,9 @@ export const getAppUrl = () => {
   }
   // Allow either loopback spelling at the same local port. This also keeps
   // Better Auth requests on the browser's own origin (and cookie scope).
-  return resolveBrowserAppUrl(NEXT_PUBLIC_APP_URL, window.location.origin);
+  return resolveBrowserAppUrl(
+    NEXT_PUBLIC_APP_URL,
+    window.location.origin,
+    env("NEXT_PUBLIC_OAUTH_BASE_URL") || undefined,
+  );
 };

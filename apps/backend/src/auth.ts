@@ -94,10 +94,10 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true, // This will be dynamically controlled by middleware
     requireEmailVerification: false, // Set to true if you want email verification
-    minPasswordLength: 6, // Allow passwords with at least 6 characters
+    minPasswordLength: 20, // Require strong bootstrap and UI registration passwords
     maxPasswordLength: 128,
     password: {
-      minLength: 6,
+      minLength: 20,
     },
   },
   account: {
@@ -126,9 +126,13 @@ export const auth = betterAuth({
     },
   },
   advanced: {
+    // HTTPS OAuth login uses host-only cookies at luckylion.run.place.
+    // A cookie Domain derived from local APP_URL (.localhost) cannot be
+    // accepted by a browser opening the public OAuth authorization page.
     crossSubDomainCookies: {
-      enabled: true,
+      enabled: !process.env.OAUTH_PUBLIC_BASE_URL,
     },
+    useSecureCookies: Boolean(process.env.OAUTH_PUBLIC_BASE_URL),
   },
   logger: {
     level: "debug", // Enable debug logging

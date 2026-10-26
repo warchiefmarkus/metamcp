@@ -3,7 +3,6 @@ import { RequestOptions } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import {
   CallToolRequestSchema,
   CallToolResult,
-  CompatibilityCallToolResultSchema,
   GetPromptRequestSchema,
   GetPromptResultSchema,
   ListPromptsRequestSchema,
@@ -16,6 +15,7 @@ import {
   ListToolsResultSchema,
   ReadResourceRequestSchema,
   ReadResourceResultSchema,
+  type RequestMeta,
   ResourceTemplate,
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
@@ -27,6 +27,7 @@ import { toolsImplementations } from "../../trpc/tools.impl";
 import { configService } from "../config.service";
 import { ConnectedClient } from "./client";
 import { getMcpServers } from "./fetch-metamcp";
+import { LargePayloadCallToolResultSchema } from "./large-payload-call-tool-result-schema";
 import { mcpServerPool } from "./mcp-server-pool";
 import {
   createFilterCallToolMiddleware,
@@ -46,6 +47,27 @@ import {
 import { parseToolName } from "./tool-name-parser";
 import { toolsSyncCache } from "./tools-sync-cache";
 import { sanitizeName } from "./utils";
+
+const LEGACY_INCOMPATIBLE_REQUEST_META_KEYS = [
+  "io.modelcontextprotocol/protocolVersion",
+  "io.modelcontextprotocol/clientInfo",
+  "io.modelcontextprotocol/clientCapabilities",
+] as const;
+
+function sanitizeForwardedRequestMeta(
+  meta: RequestMeta | undefined,
+): RequestMeta | undefined {
+  if (!meta) {
+    return undefined;
+  }
+
+  const sanitized = { ...meta };
+  for (const key of LEGACY_INCOMPATIBLE_REQUEST_META_KEYS) {
+    delete sanitized[key];
+  }
+
+  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
+}
 
 /**
  * Filter out tools that are overrides of existing tools to prevent duplicates in database
@@ -236,7 +258,9 @@ export const createServer = async (
                       method: "tools/list",
                       params: {
                         cursor: cursor,
-                        _meta: request.params?._meta,
+                        _meta: sanitizeForwardedRequestMeta(
+                          request.params?._meta,
+                        ),
                       },
                     },
                     ListToolsResultSchema,
@@ -460,10 +484,10 @@ export const createServer = async (
               params: {
                 name: originalToolName,
                 arguments: args || {},
-                _meta: request.params._meta,
+                _meta: sanitizeForwardedRequestMeta(request.params._meta),
               },
             },
-            CompatibilityCallToolResultSchema,
+            LargePayloadCallToolResultSchema,
             mcpRequestOptions,
           ),
       );
@@ -546,7 +570,7 @@ export const createServer = async (
               params: {
                 name: promptName,
                 arguments: request.params.arguments || {},
-                _meta: request.params._meta,
+                _meta: sanitizeForwardedRequestMeta(request.params._meta),
               },
             },
             GetPromptResultSchema,
@@ -639,7 +663,7 @@ export const createServer = async (
                   method: "prompts/list",
                   params: {
                     cursor: request.params?.cursor,
-                    _meta: request.params?._meta,
+                    _meta: sanitizeForwardedRequestMeta(request.params?._meta),
                   },
                 },
                 ListPromptsResultSchema,
@@ -746,7 +770,7 @@ export const createServer = async (
                   method: "resources/list",
                   params: {
                     cursor: request.params?.cursor,
-                    _meta: request.params?._meta,
+                    _meta: sanitizeForwardedRequestMeta(request.params?._meta),
                   },
                 },
                 ListResourcesResultSchema,
@@ -799,7 +823,7 @@ export const createServer = async (
               method: "resources/read",
               params: {
                 uri,
-                _meta: request.params._meta,
+                _meta: sanitizeForwardedRequestMeta(request.params._meta),
               },
             },
             ReadResourceResultSchema,
@@ -892,7 +916,9 @@ export const createServer = async (
                     method: "resources/templates/list",
                     params: {
                       cursor: request.params?.cursor,
-                      _meta: request.params?._meta,
+                      _meta: sanitizeForwardedRequestMeta(
+                        request.params?._meta,
+                      ),
                     },
                   },
                   ListResourceTemplatesResultSchema,
