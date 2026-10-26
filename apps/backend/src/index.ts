@@ -4,6 +4,7 @@ import { auth } from "./auth";
 import { pool } from "./db";
 import { metaMcpServerPool } from "./lib/metamcp";
 import { initializeIdleServers, initializeOnStartup } from "./lib/startup";
+import { assertSecureBootstrapCredentials } from "./lib/bootstrap-credentials-security";
 import hostControlRouter from "./routers/host-control";
 import mcpProxyRouter from "./routers/mcp-proxy";
 import oauthRouter from "./routers/oauth";
@@ -121,6 +122,9 @@ process.once("SIGINT", () => void shutdown("SIGINT"));
 process.once("SIGTERM", () => void shutdown("SIGTERM"));
 
 async function start(): Promise<void> {
+  // Refuse to open the HTTP/MCP server with default, weak, or sample credentials.
+  assertSecureBootstrapCredentials(process.env);
+
   // Startup initialization (must run after DB is reachable/migrations are applied, and before listening)
   await initializeOnStartup();
 
@@ -151,7 +155,7 @@ async function start(): Promise<void> {
 
 start().catch((err) => {
   console.error("❌ Fatal startup error:", err);
-  // Do not throw - keep consistent with other startup behavior
+  process.exit(1); // Fail closed: never accept requests after startup validation failure.
 });
 
 app.get("/health", (req, res) => {
