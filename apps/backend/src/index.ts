@@ -2,6 +2,7 @@ import express from "express";
 
 import { auth } from "./auth";
 import { initializeIdleServers, initializeOnStartup } from "./lib/startup";
+import { assertSecureBootstrapCredentials } from "./lib/bootstrap-credentials-security";
 import mcpProxyRouter from "./routers/mcp-proxy";
 import oauthRouter from "./routers/oauth";
 import publicEndpointsRouter from "./routers/public-metamcp";
@@ -84,6 +85,9 @@ app.use("/mcp-proxy", mcpProxyRouter);
 app.use("/trpc", trpcRouter);
 
 async function start(): Promise<void> {
+  // Validate even when bootstrap is disabled; refuse to listen with weak credentials.
+  assertSecureBootstrapCredentials(process.env);
+
   // Startup initialization (must run after DB is reachable/migrations are applied, and before listening)
   await initializeOnStartup();
 
@@ -111,7 +115,7 @@ async function start(): Promise<void> {
 
 start().catch((err) => {
   console.error("❌ Fatal startup error:", err);
-  // Do not throw - keep consistent with other startup behavior
+  process.exit(1); // Fail closed: do not leave an uninitialized server running.
 });
 
 // Graceful shutdown: clean up MCP server pools on SIGTERM/SIGINT

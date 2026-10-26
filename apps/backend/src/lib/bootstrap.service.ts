@@ -4,6 +4,7 @@ import { ConfigKeyEnum } from "@repo/zod-types";
 import { and, eq, isNull, notInArray } from "drizzle-orm";
 
 import { auth } from "../auth";
+import { assertSecureBootstrapCredentials } from "./bootstrap-credentials-security";
 import { db } from "../db";
 import {
   accountsTable,
@@ -195,11 +196,11 @@ function parseEnvConfig(): EnvConfig {
     // Registration controls
     disableUiRegistration: parseBool(
       process.env.BOOTSTRAP_DISABLE_REGISTRATION_UI,
-      false,
+      true,
     ),
     disableSsoRegistration: parseBool(
       process.env.BOOTSTRAP_DISABLE_REGISTRATION_SSO,
-      false,
+      true,
     ),
 
     // Array configurations
@@ -891,6 +892,9 @@ function validateConfig(config: EnvConfig): void {
     );
   }
 
+  // Reject unsafe bootstrap credentials before writing users to the database.
+  assertSecureBootstrapCredentials(process.env);
+
   // Validate users
   for (const user of config.users) {
     if (!user.email || user.email.trim() === "") {
@@ -898,11 +902,6 @@ function validateConfig(config: EnvConfig): void {
     }
     if (!user.password || user.password.trim() === "") {
       console.warn(`⚠️ User ${user.email} is missing 'password' field`);
-    }
-    if (user.password && user.password.length < 8) {
-      console.warn(
-        `⚠️ Password for ${user.email} is less than 8 characters. Consider using a stronger password.`,
-      );
     }
   }
 

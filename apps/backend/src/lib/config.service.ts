@@ -7,7 +7,7 @@ export const configService = {
     const config = await configRepo.getConfig(
       ConfigKeyEnum.enum.DISABLE_SIGNUP,
     );
-    return config?.value === "true";
+    return config?.value !== "false";
   },
 
   async setSignupDisabled(disabled: boolean): Promise<void> {
@@ -22,7 +22,7 @@ export const configService = {
     const config = await configRepo.getConfig(
       ConfigKeyEnum.enum.DISABLE_SSO_SIGNUP,
     );
-    return config?.value === "true";
+    return config?.value !== "false";
   },
 
   async setSsoSignupDisabled(disabled: boolean): Promise<void> {
