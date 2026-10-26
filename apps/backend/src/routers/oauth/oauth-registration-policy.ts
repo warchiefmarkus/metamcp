@@ -13,5 +13,5 @@ export function permittedDcrGrantTypes(value: unknown): string[] | null {
   if (!value.includes("authorization_code")) return null;
   // No refresh_token grant is advertised until the token endpoint actually
   // supports issuing and rotating refresh tokens.
-  return ["authorization_code"];
+  return ["authorization_code", "refresh_token"];
 }

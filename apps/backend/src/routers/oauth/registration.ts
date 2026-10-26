@@ -77,11 +77,7 @@ registrationRouter.post("/oauth/register", rateLimitToken, async (req, res) => {
         error_description: "Unsupported OAuth client grant types",
       });
     }
-    // ChatGPT may request refresh_token during DCR, but until we implement
-    // refresh rotation we register and advertise authorization_code only.
-    if (Array.isArray(grant_types) && grant_types.includes("refresh_token")) {
-      logger.info("DCR: client requested refresh_token; registered authorization_code only");
-    }
+    // Clients that request refresh_token now receive rotating refresh grants.
 
     const clientResponseTypes =
       response_types && Array.isArray(response_types)
@@ -92,7 +88,7 @@ registrationRouter.post("/oauth/register", rateLimitToken, async (req, res) => {
     const clientTokenEndpointAuthMethod = token_endpoint_auth_method || "none";
 
     // Validate grant types and response types consistency
-    const validGrantTypes = ["authorization_code"];
+    const validGrantTypes = ["authorization_code", "refresh_token"];
     const validResponseTypes = ["code"];
     const validAuthMethods = [
       "none",

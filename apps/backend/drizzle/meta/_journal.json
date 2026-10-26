@@ -113,6 +113,13 @@
       "when": 1793008073837,
       "tag": "0015_oauth-resource-audience",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1793047606375,
+      "tag": "0016_oauth-refresh-rotation",
+      "breakpoints": true
     }
   ]
 }

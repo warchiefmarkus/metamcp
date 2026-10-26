@@ -5,6 +5,7 @@ import logger from "@/utils/logger";
 import { oauthRepository } from "../../db/repositories";
 import { generateSecureAccessToken, getBaseUrl, rateLimitToken } from "./utils";
 import { canonicalMcpResource } from "./resource";
+import { ACCESS_TTL_SECONDS, REFRESH_TTL_SECONDS, issueInitialRefresh, makeRefreshToken, rotateRefresh, revokeRefresh } from "./refresh";
 
 const tokenRouter = express.Router();
 
@@ -18,7 +19,6 @@ tokenRouter.post("/oauth/token", rateLimitToken, async (req, res) => {
     // Check if body was parsed correctly
     if (!req.body || typeof req.body !== "object") {
       logger.error("Token endpoint: req.body is undefined or invalid", {
-        body: req.body,
         bodyType: typeof req.body,
         contentType: req.headers["content-type"],
         method: req.method,
@@ -30,8 +30,58 @@ tokenRouter.post("/oauth/token", rateLimitToken, async (req, res) => {
       });
     }
 
-    const { grant_type, code, redirect_uri, client_id, code_verifier, resource } =
+    const { grant_type, code, redirect_uri, client_id, code_verifier, resource, refresh_token } =
       req.body;
+
+    // Refresh exchange: opaque rotating 384-bit tokens, per-client/resource
+    // binding, and refresh-family replay revocation.
+    if (grant_type === "refresh_token") {
+      if (typeof client_id !== "string" || typeof refresh_token !== "string") {
+        return res.status(400).json({ error: "invalid_request" });
+      }
+      // RFC 8707 allows refresh requests to omit resource; retain the original
+      // resource bound to the refresh token. Explicit resource cannot change.
+      const target = resource === undefined ? undefined :
+        (canonicalMcpResource(resource, getBaseUrl(req)) ?? undefined);
+      if (resource !== undefined && !target)
+        return res.status(400).json({ error: "invalid_target" });
+      const client = await oauthRepository.getClient(client_id);
+      if (!client || !client.grant_types.includes("refresh_token")) {
+        return res.status(400).json({ error: "invalid_client" });
+      }
+      if (client.token_endpoint_auth_method === "client_secret_basic") {
+        const header = req.headers.authorization;
+        if (!header?.startsWith("Basic ")) return res.status(401).json({ error: "invalid_client" });
+        const credentials = Buffer.from(header.slice(6), "base64").toString("utf8");
+        const separator = credentials.indexOf(":");
+        if (separator < 0 || credentials.slice(0, separator) !== client_id ||
+            credentials.slice(separator + 1) !== client.client_secret) {
+          return res.status(401).json({ error: "invalid_client" });
+        }
+      } else if (client.token_endpoint_auth_method === "client_secret_post") {
+        if (!client.client_secret || req.body.client_secret !== client.client_secret)
+          return res.status(401).json({ error: "invalid_client" });
+      } else if (client.token_endpoint_auth_method !== "none") {
+        return res.status(401).json({ error: "invalid_client" });
+      }
+      const result = await rotateRefresh(refresh_token, client_id, target);
+      if (result.status !== "ok") {
+        return res.status(400).json({
+          error: "invalid_grant",
+          error_description: result.status === "replayed" ?
+            "Refresh token reused; authorization revoked" : "Invalid or expired refresh token",
+        });
+      }
+      res.set("Cache-Control", "no-store").set("Pragma", "no-cache");
+      return res.json({
+        access_token: result.new_access_token,
+        refresh_token: result.new_refresh_token,
+        token_type: "Bearer",
+        expires_in: ACCESS_TTL_SECONDS,
+        refresh_token_expires_in: Math.max(0, Math.floor((result.expires_at.getTime() - Date.now()) / 1000)),
+        scope: result.scope,
+      });
+    }
 
     // Validate grant type
     if (grant_type !== "authorization_code") {
@@ -184,19 +234,33 @@ tokenRouter.post("/oauth/token", rateLimitToken, async (req, res) => {
 
     // Generate access token
     const accessToken = generateSecureAccessToken();
-    const expiresIn = 3600; // 1 hour
+    const expiresIn = ACCESS_TTL_SECONDS;
+    const issuesRefresh = clientData.grant_types.includes("refresh_token");
+    const newRefreshToken = issuesRefresh ? makeRefreshToken() : undefined;
+    if (newRefreshToken) {
+      await issueInitialRefresh(
+        codeData.client_id,
+        codeData.user_id,
+        codeData.scope,
+        requestedResource,
+        newRefreshToken,
+        accessToken,
+      );
+    } else {
+      // Older clients registered only for authorization_code remain supported.
+      await oauthRepository.setAccessToken(accessToken, {
+        client_id: codeData.client_id,
+        user_id: codeData.user_id,
+        scope: codeData.scope,
+        resource: requestedResource,
+        expires_at: Date.now() + expiresIn * 1000,
+      });
+    }
 
-    // Store access token data
-    await oauthRepository.setAccessToken(accessToken, {
-      client_id: codeData.client_id,
-      user_id: codeData.user_id,
-      scope: codeData.scope,
-      resource: requestedResource,
-      expires_at: Date.now() + expiresIn * 1000,
-    });
-
+    res.set("Cache-Control", "no-store").set("Pragma", "no-cache");
     res.json({
       access_token: accessToken,
+      ...(newRefreshToken ? { refresh_token: newRefreshToken, refresh_token_expires_in: REFRESH_TTL_SECONDS } : {}),
       token_type: "Bearer",
       expires_in: expiresIn,
       scope: codeData.scope,
@@ -293,11 +357,11 @@ tokenRouter.post("/oauth/revoke", async (req, res) => {
       });
     }
 
-    // Revoke the token by removing it from storage
-    if (await oauthRepository.getAccessToken(token)) {
+    // RFC 7009: token revocation is idempotent for both access and refresh.
+    if (typeof token === "string" && token.startsWith("mcp_refresh_")) {
+      await revokeRefresh(token);
+    } else if (typeof token === "string" && await oauthRepository.getAccessToken(token)) {
       await oauthRepository.deleteAccessToken(token);
-    } else {
-      // RFC 7009 specifies that the endpoint should return success even if token doesn't exist
     }
 
     // RFC 7009 specifies that revocation endpoint should return 200 OK

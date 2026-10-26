@@ -119,7 +119,7 @@ metadataRouter.get(
         response_modes_supported: ["query"],
 
         // Supported grant types for MCP
-        grant_types_supported: ["authorization_code"],
+        grant_types_supported: ["authorization_code", "refresh_token"],
 
         // Authentication methods
         token_endpoint_auth_methods_supported: [

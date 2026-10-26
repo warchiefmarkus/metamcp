@@ -486,6 +486,7 @@ export const oauthAccessTokensTable = pgTable(
       .references(() => usersTable.id, { onDelete: "cascade" }),
     scope: text("scope").notNull().default("admin"),
     resource: text("resource"),
+    refresh_family_id: uuid("refresh_family_id"),
     expires_at: timestamp("expires_at", { withTimezone: true }).notNull(),
     created_at: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -495,5 +496,34 @@ export const oauthAccessTokensTable = pgTable(
     index("oauth_access_tokens_client_id_idx").on(table.client_id),
     index("oauth_access_tokens_user_id_idx").on(table.user_id),
     index("oauth_access_tokens_expires_at_idx").on(table.expires_at),
+  ],
+);
+
+// Refresh token material is never stored directly: SHA-256 hash of a random
+// 384-bit opaque token only. Consumed tokens are retained as replay tombstones.
+export const oauthRefreshTokensTable = pgTable(
+  "oauth_refresh_tokens",
+  {
+    token_hash: text("token_hash").primaryKey(),
+    family_id: uuid("family_id").notNull(),
+    client_id: text("client_id")
+      .notNull()
+      .references(() => oauthClientsTable.client_id, { onDelete: "cascade" }),
+    user_id: text("user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    scope: text("scope").notNull(),
+    resource: text("resource").notNull(),
+    expires_at: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumed_at: timestamp("consumed_at", { withTimezone: true }),
+    revoked_at: timestamp("revoked_at", { withTimezone: true }),
+    created_at: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("oauth_refresh_tokens_family_id_idx").on(table.family_id),
+    index("oauth_refresh_tokens_expires_at_idx").on(table.expires_at),
+    index("oauth_refresh_tokens_user_id_idx").on(table.user_id),
   ],
 );
